@@ -11,7 +11,7 @@ const BILLBOARDS_PER_CHUNK := 6000  # High candidate pool - most filtered by ter
 # Per-tier acceptance rates for billboards (0=CLEAR to 5=HEAVY_JUNGLE)
 const TIER_ACCEPT := {
 	0: 0.00,  # CLEAR
-	1: 0.00,  # RICE_PADDY
+	1: 0.85,  # RICE_PADDY - high density rice plants
 	2: 0.05,  # GRASSLAND
 	3: 0.35,  # LIGHT_JUNGLE
 	4: 0.70,  # MEDIUM_JUNGLE
@@ -26,6 +26,10 @@ var _bush_mesh: ArrayMesh
 var _tree_textures: Array[Texture2D] = []
 var _bamboo_textures: Array[Texture2D] = []
 var _bush_textures: Array[Texture2D] = []
+var _rice_textures: Array[Texture2D] = []
+
+# Rice billboard meshes (separate from trees for paddy-only placement)
+var _rice_meshes: Array[ArrayMesh] = []
 
 # Billboard materials
 var _tree_materials: Array[StandardMaterial3D] = []
@@ -117,8 +121,15 @@ func _load_billboard_textures() -> void:
 			_bush_textures.append(load(path))
 			print("[BillboardVegetation] Loaded: %s" % path)
 
-	print("[BillboardVegetation] Loaded %d tree, %d bamboo, %d bush textures" % [
-		_tree_textures.size(), _bamboo_textures.size(), _bush_textures.size()
+	# Rice billboards (for rice paddy terrain)
+	for i in range(1, 4):
+		var path := "res://textures/billboards/rice%d_billboard.png" % i
+		if ResourceLoader.exists(path):
+			_rice_textures.append(load(path))
+			print("[BillboardVegetation] Loaded: %s" % path)
+
+	print("[BillboardVegetation] Loaded %d tree, %d bamboo, %d bush, %d rice textures" % [
+		_tree_textures.size(), _bamboo_textures.size(), _bush_textures.size(), _rice_textures.size()
 	])
 
 
@@ -208,7 +219,14 @@ func _create_billboard_meshes() -> void:
 	if not _bush_textures.is_empty():
 		_bush_mesh = _create_cross_billboard_mesh(_bush_textures[0], 3.0, 2.5)
 
-	print("[BillboardVegetation] Created %d billboard mesh variants" % _tree_meshes.size())
+	# Create rice billboard meshes (short grass clumps for paddies)
+	for tex in _rice_textures:
+		var mesh := _create_cross_billboard_mesh(tex, 1.8, 1.2)  # Short and wide
+		_rice_meshes.append(mesh)
+
+	print("[BillboardVegetation] Created %d tree, %d rice billboard mesh variants" % [
+		_tree_meshes.size(), _rice_meshes.size()
+	])
 
 
 ## Generate billboards for a chunk
@@ -259,12 +277,14 @@ func _build_placements(coord: Vector2i, heightmap: Object) -> void:
 		var rot_y := rng.randf() * TAU
 		var scale_val := rng.randf_range(0.7, 1.3)
 		var mesh_idx := rng.randi() % _tree_meshes.size() if not _tree_meshes.is_empty() else 0
+		var rice_mesh_idx := rng.randi() % _rice_meshes.size() if not _rice_meshes.is_empty() else 0
 
 		placements.append({
 			"position": Vector3(world_x, height, world_z),
 			"rot_y": rot_y,
 			"scale": scale_val,
 			"mesh_idx": mesh_idx,
+			"rice_mesh_idx": rice_mesh_idx,
 			"bundle_x": bundle_x,
 			"bundle_z": bundle_z,
 			"accept_roll": rng.randf(),  # Baked at build time, stable forever
@@ -278,7 +298,8 @@ func _build_placements(coord: Vector2i, heightmap: Object) -> void:
 func _materialize_chunk(coord: Vector2i, vegetation_terrain: PackedByteArray) -> void:
 	var placements: Array = _chunk_placements[coord]
 	var bundles_per_side := int(_chunk_size / 8.0)
-	var transforms_by_mesh: Dictionary = {}
+	var transforms_by_mesh: Dictionary = {}  # For trees (jungle terrain)
+	var rice_transforms_by_mesh: Dictionary = {}  # For rice (paddy terrain)
 
 	for p in placements:
 		var bundle_idx: int = p.bundle_z * bundles_per_side + p.bundle_x
@@ -296,20 +317,31 @@ func _materialize_chunk(coord: Vector2i, vegetation_terrain: PackedByteArray) ->
 		if p.accept_roll > modulated:
 			continue
 
-		if not transforms_by_mesh.has(p.mesh_idx):
-			transforms_by_mesh[p.mesh_idx] = []
-
 		var t := Transform3D.IDENTITY
 		t = t.rotated(Vector3.UP, p.rot_y)
 		t = t.scaled(Vector3.ONE * p.scale)
 		t.origin = p.position
-		transforms_by_mesh[p.mesh_idx].append(t)
 
-	# Count total for logging
-	var total_count := 0
+		# RICE_PADDY (terrain_type 1) uses rice meshes, others use tree meshes
+		if terrain_type == 1 and not _rice_meshes.is_empty():
+			var rice_idx: int = p.rice_mesh_idx
+			if not rice_transforms_by_mesh.has(rice_idx):
+				rice_transforms_by_mesh[rice_idx] = []
+			rice_transforms_by_mesh[rice_idx].append(t)
+		else:
+			if not transforms_by_mesh.has(p.mesh_idx):
+				transforms_by_mesh[p.mesh_idx] = []
+			transforms_by_mesh[p.mesh_idx].append(t)
+
+	# Count totals for logging
+	var tree_count := 0
+	var rice_count := 0
 	for mesh_idx in transforms_by_mesh:
-		total_count += transforms_by_mesh[mesh_idx].size()
+		tree_count += transforms_by_mesh[mesh_idx].size()
+	for mesh_idx in rice_transforms_by_mesh:
+		rice_count += rice_transforms_by_mesh[mesh_idx].size()
 
+	var total_count := tree_count + rice_count
 	if total_count == 0:
 		return
 
@@ -318,7 +350,7 @@ func _materialize_chunk(coord: Vector2i, vegetation_terrain: PackedByteArray) ->
 	container.name = "Billboard_%d_%d" % [coord.x, coord.y]
 	add_child(container)
 
-	# Create MultiMesh for each mesh type
+	# Create MultiMesh for each tree mesh type
 	for mesh_idx: int in transforms_by_mesh:
 		var group_transforms: Array = transforms_by_mesh[mesh_idx]
 		if group_transforms.is_empty():
@@ -329,28 +361,56 @@ func _materialize_chunk(coord: Vector2i, vegetation_terrain: PackedByteArray) ->
 		mm.mesh = _tree_meshes[mesh_idx]
 		mm.instance_count = group_transforms.size()
 
-		# Build buffer directly
 		var buffer := PackedFloat32Array()
 		buffer.resize(group_transforms.size() * 12)
 		for i in group_transforms.size():
-			var t: Transform3D = group_transforms[i]
+			var tf: Transform3D = group_transforms[i]
 			var b := i * 12
-			buffer[b + 0] = t.basis.x.x; buffer[b + 1] = t.basis.y.x
-			buffer[b + 2] = t.basis.z.x; buffer[b + 3] = t.origin.x
-			buffer[b + 4] = t.basis.x.y; buffer[b + 5] = t.basis.y.y
-			buffer[b + 6] = t.basis.z.y; buffer[b + 7] = t.origin.y
-			buffer[b + 8] = t.basis.x.z; buffer[b + 9] = t.basis.y.z
-			buffer[b + 10] = t.basis.z.z; buffer[b + 11] = t.origin.z
+			buffer[b + 0] = tf.basis.x.x; buffer[b + 1] = tf.basis.y.x
+			buffer[b + 2] = tf.basis.z.x; buffer[b + 3] = tf.origin.x
+			buffer[b + 4] = tf.basis.x.y; buffer[b + 5] = tf.basis.y.y
+			buffer[b + 6] = tf.basis.z.y; buffer[b + 7] = tf.origin.y
+			buffer[b + 8] = tf.basis.x.z; buffer[b + 9] = tf.basis.y.z
+			buffer[b + 10] = tf.basis.z.z; buffer[b + 11] = tf.origin.z
 		mm.buffer = buffer
 
 		var mm_instance := MultiMeshInstance3D.new()
 		mm_instance.multimesh = mm
-		mm_instance.name = "BB_Mesh_%d" % mesh_idx
+		mm_instance.name = "BB_Tree_%d" % mesh_idx
+		container.add_child(mm_instance)
+
+	# Create MultiMesh for each rice mesh type
+	for mesh_idx: int in rice_transforms_by_mesh:
+		var group_transforms: Array = rice_transforms_by_mesh[mesh_idx]
+		if group_transforms.is_empty():
+			continue
+
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = _rice_meshes[mesh_idx]
+		mm.instance_count = group_transforms.size()
+
+		var buffer := PackedFloat32Array()
+		buffer.resize(group_transforms.size() * 12)
+		for i in group_transforms.size():
+			var tf: Transform3D = group_transforms[i]
+			var b := i * 12
+			buffer[b + 0] = tf.basis.x.x; buffer[b + 1] = tf.basis.y.x
+			buffer[b + 2] = tf.basis.z.x; buffer[b + 3] = tf.origin.x
+			buffer[b + 4] = tf.basis.x.y; buffer[b + 5] = tf.basis.y.y
+			buffer[b + 6] = tf.basis.z.y; buffer[b + 7] = tf.origin.y
+			buffer[b + 8] = tf.basis.x.z; buffer[b + 9] = tf.basis.y.z
+			buffer[b + 10] = tf.basis.z.z; buffer[b + 11] = tf.origin.z
+		mm.buffer = buffer
+
+		var mm_instance := MultiMeshInstance3D.new()
+		mm_instance.multimesh = mm
+		mm_instance.name = "BB_Rice_%d" % mesh_idx
 		container.add_child(mm_instance)
 
 	_chunk_billboards[coord] = container
 	container.visible = false  # Start hidden, LOD system will enable
-	print("[BillboardVegetation] Generated %d billboards for chunk %s" % [total_count, coord])
+	print("[BillboardVegetation] Generated %d tree + %d rice billboards for chunk %s" % [tree_count, rice_count, coord])
 
 
 ## Clear billboard nodes only (keeps placement cache for regen)
