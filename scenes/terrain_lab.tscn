@@ -1,0 +1,411 @@
+[gd_scene load_steps=5 format=3 uid="uid://terrain_lab_main"]
+
+[ext_resource type="Script" path="res://scenes/terrain_lab.gd" id="1_lab"]
+[ext_resource type="Script" path="res://ui/terrain_lab_ui.gd" id="3_ui"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_1"]
+sky_top_color = Color(0.45, 0.55, 0.7, 1)
+sky_horizon_color = Color(0.65, 0.72, 0.68, 1)
+ground_bottom_color = Color(0.18, 0.25, 0.15, 1)
+ground_horizon_color = Color(0.35, 0.45, 0.38, 1)
+sun_angle_max = 40.0
+
+[sub_resource type="Sky" id="Sky_1"]
+sky_material = SubResource("ProceduralSkyMaterial_1")
+
+[sub_resource type="Environment" id="Environment_1"]
+background_mode = 2
+sky = SubResource("Sky_1")
+ambient_light_source = 2
+ambient_light_color = Color(0.55, 0.62, 0.58, 1)
+ambient_light_energy = 0.5
+tonemap_mode = 2
+tonemap_white = 1.2
+ssao_enabled = true
+ssao_radius = 2.0
+ssao_intensity = 1.5
+fog_enabled = true
+fog_light_color = Color(0.6, 0.7, 0.65, 1)
+fog_density = 0.002
+fog_aerial_perspective = 0.5
+fog_sky_affect = 0.6
+
+[node name="TerrainLab" type="Node3D"]
+script = ExtResource("1_lab")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_1")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866025, -0.353553, 0.353553, 0, 0.707107, 0.707107, -0.5, -0.612372, 0.612372, 500, 500, 500)
+light_color = Color(1, 0.95, 0.9, 1)
+light_energy = 1.2
+shadow_enabled = true
+shadow_bias = 0.03
+directional_shadow_mode = 1
+directional_shadow_max_distance = 2000.0
+
+[node name="CameraRig" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1500, 0, 1500)
+
+[node name="SpringArm3D" type="SpringArm3D" parent="CameraRig"]
+transform = Transform3D(1, 0, 0, 0, 0.573576, 0.819152, 0, -0.819152, 0.573576, 0, 0, 0)
+collision_mask = 0
+spring_length = 500.0
+
+[node name="Camera3D" type="Camera3D" parent="CameraRig/SpringArm3D"]
+fov = 60.0
+far = 5000.0
+
+[node name="LoadingUI" type="Control" parent="."]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+mouse_filter = 2
+
+[node name="LoadingBG" type="ColorRect" parent="LoadingUI"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+color = Color(0.1, 0.1, 0.1, 0.9)
+
+[node name="LoadingLabel" type="Label" parent="LoadingUI"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -200.0
+offset_top = -50.0
+offset_right = 200.0
+offset_bottom = 50.0
+text = "Generating terrain..."
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="UI" type="Control" parent="."]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+mouse_filter = 2
+script = ExtResource("3_ui")
+
+[node name="Panel" type="PanelContainer" parent="UI"]
+layout_mode = 1
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -340.0
+offset_bottom = 780.0
+grow_horizontal = 0
+
+[node name="VBox" type="VBoxContainer" parent="UI/Panel"]
+layout_mode = 2
+
+[node name="Title" type="Label" parent="UI/Panel/VBox"]
+layout_mode = 2
+text = "TERRAIN ENGINE LAB (3km)"
+horizontal_alignment = 1
+
+[node name="HSeparator" type="HSeparator" parent="UI/Panel/VBox"]
+layout_mode = 2
+
+[node name="PresetSection" type="VBoxContainer" parent="UI/Panel/VBox"]
+layout_mode = 2
+
+[node name="PresetLabel" type="Label" parent="UI/Panel/VBox/PresetSection"]
+layout_mode = 2
+text = "Preset:"
+
+[node name="PresetDropdown" type="OptionButton" parent="UI/Panel/VBox/PresetSection"]
+layout_mode = 2
+
+[node name="SeedSection" type="HBoxContainer" parent="UI/Panel/VBox"]
+layout_mode = 2
+
+[node name="SeedLabel" type="Label" parent="UI/Panel/VBox/SeedSection"]
+layout_mode = 2
+text = "Seed:"
+
+[node name="SeedValue" type="Label" parent="UI/Panel/VBox/SeedSection"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "0"
+
+[node name="HSeparator2" type="HSeparator" parent="UI/Panel/VBox"]
+layout_mode = 2
+
+[node name="ParamLabel" type="Label" parent="UI/Panel/VBox"]
+layout_mode = 2
+text = "Basic Parameters:"
+
+[node name="ParamSection" type="VBoxContainer" parent="UI/Panel/VBox"]
+layout_mode = 2
+
+[node name="HeightScale" type="HBoxContainer" parent="UI/Panel/VBox/ParamSection"]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="UI/Panel/VBox/ParamSection/HeightScale"]
+custom_minimum_size = Vector2(80, 0)
+layout_mode = 2
+text = "Height:"
+
+[node name="Slider" type="HSlider" parent="UI/Panel/VBox/ParamSection/HeightScale"]
+layout_mode = 2
+size_flags_horizontal = 3
+min_value = 50.0
+max_value = 500.0
+value = 280.0
+
+[node name="Value" type="Label" parent="UI/Panel/VBox/ParamSection/HeightScale"]
+custom_minimum_size = Vector2(60, 0)
+layout_mode = 2
+text = "280 m"
+
+[node name="BaseFreq" type="HBoxContainer" parent="UI/Panel/VBox/ParamSection"]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="UI/Panel/VBox/ParamSection/BaseFreq"]
+custom_minimum_size = Vector2(80, 0)
+layout_mode = 2
+text = "Frequency:"
+
+[node name="Slider" type="HSlider" parent="UI/Panel/VBox/ParamSection/BaseFreq"]
+layout_mode = 2
+size_flags_horizontal = 3
+min_value = 0.5
+max_value = 10.0
+step = 0.1
+value = 2.0
+
+[node name="Value" type="Label" parent="UI/Panel/VBox/ParamSection/BaseFreq"]
+custom_minimum_size = Vector2(60, 0)
+layout_mode = 2
+text = "0.002"
+
+[node name="Smoothing" type="HBoxContainer" parent="UI/Panel/VBox/ParamSection"]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="UI/Panel/VBox/ParamSection/Smoothing"]
+custom_minimum_size = Vector2(80, 0)
+layout_mode = 2
+text = "Smoothing:"
+
+[node name="Slider" type="HSlider" parent="UI/Panel/VBox/ParamSection/Smoothing"]
+layout_mode = 2
+size_flags_horizontal = 3
+max_value = 5.0
+step = 1.0
+value = 2.0
+
+[node name="Value" type="Label" parent="UI/Panel/VBox/ParamSection/Smoothing"]
+custom_minimum_size = Vector2(60, 0)
+layout_mode = 2
+text = "2"
+
+[node name="Cliff" type="HBoxContainer" parent="UI/Panel/VBox/ParamSection"]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="UI/Panel/VBox/ParamSection/Cliff"]
+custom_minimum_size = Vector2(80, 0)
+layout_mode = 2
+text = "Cliff Sharp:"
+
+[node name="Slider" type="HSlider" parent="UI/Panel/VBox/ParamSection/Cliff"]
+layout_mode = 2
+size_flags_horizontal = 3
+min_value = 0.5
+max_value = 8.0
+step = 0.5
+value = 3.0
+
+[node name="Value" type="Label" parent="UI/Panel/VBox/ParamSection/Cliff"]
+custom_minimum_size = Vector2(60, 0)
+layout_mode = 2
+text = "3.0"
+
+[node name="HSeparator3" type="HSeparator" parent="UI/Panel/VBox"]
+layout_mode = 2
+
+[node name="AdvancedLabel" type="Label" parent="UI/Panel/VBox"]
+layout_mode = 2
+text = "Advanced:"
+
+[node name="AdvancedSection" type="VBoxContainer" parent="UI/Panel/VBox"]
+layout_mode = 2
+
+[node name="WarpEnabled" type="HBoxContainer" parent="UI/Panel/VBox/AdvancedSection"]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="UI/Panel/VBox/AdvancedSection/WarpEnabled"]
+custom_minimum_size = Vector2(80, 0)
+layout_mode = 2
+text = "Domain Warp:"
+
+[node name="Toggle" type="CheckButton" parent="UI/Panel/VBox/AdvancedSection/WarpEnabled"]
+layout_mode = 2
+button_pressed = true
+
+[node name="WarpStrength" type="HBoxContainer" parent="UI/Panel/VBox/AdvancedSection"]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="UI/Panel/VBox/AdvancedSection/WarpStrength"]
+custom_minimum_size = Vector2(80, 0)
+layout_mode = 2
+text = "Warp Str:"
+
+[node name="Slider" type="HSlider" parent="UI/Panel/VBox/AdvancedSection/WarpStrength"]
+layout_mode = 2
+size_flags_horizontal = 3
+max_value = 100.0
+value = 40.0
+
+[node name="Value" type="Label" parent="UI/Panel/VBox/AdvancedSection/WarpStrength"]
+custom_minimum_size = Vector2(60, 0)
+layout_mode = 2
+text = "40"
+
+[node name="RidgeEnabled" type="HBoxContainer" parent="UI/Panel/VBox/AdvancedSection"]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="UI/Panel/VBox/AdvancedSection/RidgeEnabled"]
+custom_minimum_size = Vector2(80, 0)
+layout_mode = 2
+text = "Ridges:"
+
+[node name="Toggle" type="CheckButton" parent="UI/Panel/VBox/AdvancedSection/RidgeEnabled"]
+layout_mode = 2
+button_pressed = true
+
+[node name="RidgeBlend" type="HBoxContainer" parent="UI/Panel/VBox/AdvancedSection"]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="UI/Panel/VBox/AdvancedSection/RidgeBlend"]
+custom_minimum_size = Vector2(80, 0)
+layout_mode = 2
+text = "Ridge Blend:"
+
+[node name="Slider" type="HSlider" parent="UI/Panel/VBox/AdvancedSection/RidgeBlend"]
+layout_mode = 2
+size_flags_horizontal = 3
+max_value = 1.0
+step = 0.05
+value = 0.4
+
+[node name="Value" type="Label" parent="UI/Panel/VBox/AdvancedSection/RidgeBlend"]
+custom_minimum_size = Vector2(60, 0)
+layout_mode = 2
+text = "0.40"
+
+[node name="ErosionEnabled" type="HBoxContainer" parent="UI/Panel/VBox/AdvancedSection"]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="UI/Panel/VBox/AdvancedSection/ErosionEnabled"]
+custom_minimum_size = Vector2(80, 0)
+layout_mode = 2
+text = "Erosion:"
+
+[node name="Toggle" type="CheckButton" parent="UI/Panel/VBox/AdvancedSection/ErosionEnabled"]
+layout_mode = 2
+
+[node name="ErosionIter" type="HBoxContainer" parent="UI/Panel/VBox/AdvancedSection"]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="UI/Panel/VBox/AdvancedSection/ErosionIter"]
+custom_minimum_size = Vector2(80, 0)
+layout_mode = 2
+text = "Erosion K:"
+
+[node name="Slider" type="HSlider" parent="UI/Panel/VBox/AdvancedSection/ErosionIter"]
+layout_mode = 2
+size_flags_horizontal = 3
+max_value = 100000.0
+step = 5000.0
+value = 50000.0
+
+[node name="Value" type="Label" parent="UI/Panel/VBox/AdvancedSection/ErosionIter"]
+custom_minimum_size = Vector2(60, 0)
+layout_mode = 2
+text = "50k"
+
+[node name="HSeparator4" type="HSeparator" parent="UI/Panel/VBox"]
+layout_mode = 2
+
+[node name="DamageSection" type="VBoxContainer" parent="UI/Panel/VBox"]
+layout_mode = 2
+
+[node name="DamageLabel" type="Label" parent="UI/Panel/VBox/DamageSection"]
+layout_mode = 2
+text = "Damage Type (Left Click):"
+
+[node name="DamageDropdown" type="OptionButton" parent="UI/Panel/VBox/DamageSection"]
+layout_mode = 2
+
+[node name="ClearingSection" type="VBoxContainer" parent="UI/Panel/VBox"]
+layout_mode = 2
+
+[node name="ClearingLabel" type="Label" parent="UI/Panel/VBox/ClearingSection"]
+layout_mode = 2
+text = "Clearing Mode:"
+
+[node name="ClearingToggle" type="CheckButton" parent="UI/Panel/VBox/ClearingSection"]
+layout_mode = 2
+text = "Clear Jungle (Right Click)"
+
+[node name="HSeparator5" type="HSeparator" parent="UI/Panel/VBox"]
+layout_mode = 2
+
+[node name="ButtonSection" type="HBoxContainer" parent="UI/Panel/VBox"]
+layout_mode = 2
+
+[node name="RegenerateBtn" type="Button" parent="UI/Panel/VBox/ButtonSection"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Regenerate (R)"
+
+[node name="ResetBtn" type="Button" parent="UI/Panel/VBox/ButtonSection"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Reset Damage"
+
+[node name="HSeparator6" type="HSeparator" parent="UI/Panel/VBox"]
+layout_mode = 2
+
+[node name="StatsSection" type="VBoxContainer" parent="UI/Panel/VBox"]
+layout_mode = 2
+
+[node name="StatsLabel" type="Label" parent="UI/Panel/VBox/StatsSection"]
+layout_mode = 2
+text = "Terrain Stats:"
+
+[node name="Stats" type="Label" parent="UI/Panel/VBox/StatsSection"]
+layout_mode = 2
+text = "Map: 3km x 3km | Chunks: 12x12"
+
+[node name="HSeparator7" type="HSeparator" parent="UI/Panel/VBox"]
+layout_mode = 2
+
+[node name="ControlsLabel" type="Label" parent="UI/Panel/VBox"]
+layout_mode = 2
+text = "Controls:"
+
+[node name="Controls" type="Label" parent="UI/Panel/VBox"]
+layout_mode = 2
+text = "WASD - Pan | Scroll - Zoom
+R - Regen | T - Wire | F - Fog
+
+ENGINEERING (1-9):
+1-Clear 2-Flatten 3-Trench
+4-Road 5-Berm 6-Foxhole
+7-Crater 8-DetLine 9-DetSq
+0 - Damage | ESC - Cancel
+M - Place LZ Markers
+
+Left Click - Execute"
+
+[connection signal="pressed" from="UI/Panel/VBox/ButtonSection/RegenerateBtn" to="." method="_on_regenerate"]
+[connection signal="pressed" from="UI/Panel/VBox/ButtonSection/ResetBtn" to="UI" method="_on_reset_damage_pressed"]
