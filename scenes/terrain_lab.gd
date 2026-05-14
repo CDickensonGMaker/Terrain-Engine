@@ -294,6 +294,7 @@ func _generate_initial_terrain() -> void:
 	# so rice paddies can be colored correctly during mesh build
 	if vegetation_manager:
 		terrain_manager.vegetation_manager = vegetation_manager
+		vegetation_manager._terrain_manager = terrain_manager  # For water proximity checks
 
 	terrain_manager.generate_terrain()
 

@@ -5,6 +5,8 @@ class_name TerrainManager
 
 const HeightmapStorageClass := preload("res://core/heightmap_storage.gd")
 const TerrainChunkClass := preload("res://core/terrain_chunk.gd")
+const RiverGeneratorClass := preload("res://water/river_generator.gd")
+const RiverMeshClass := preload("res://water/river_mesh.gd")
 
 signal terrain_ready
 signal chunk_loaded(coord: Vector2i, is_playable: bool)
@@ -21,6 +23,10 @@ signal generation_progress(stage: String, percent: float)
 @export var load_distance: int = 3     # Chunks to load around camera
 @export var unload_distance: int = 5   # Chunks to unload beyond this
 
+# River configuration
+@export var rivers_enabled: bool = true
+@export var river_count: int = 6  # Number of rivers to generate
+
 # Terrain data
 var heightmap: RefCounted  # HeightmapStorage
 var chunks: Dictionary = {}  # Vector2i -> TerrainChunk
@@ -35,6 +41,11 @@ var chunk_cells: int
 var camera: Camera3D
 var terrain_generator: Node  # TerrainEngine autoload
 var vegetation_manager: Node  # VegetationManager - set externally for rice paddy coloring
+
+# Rivers
+var river_paths: Array = []
+var river_meshes: Array = []
+var near_water_mask: PackedByteArray  # for rice paddy clustering near rivers
 
 # Deferred rebuild queue for async operations
 var _rebuild_queue: Array[Vector2i] = []
@@ -127,9 +138,20 @@ func generate_terrain(seed_value: int = -1) -> void:
 
 	heightmap.print_stats()
 
+	# Extract rivers and carve riverbeds BEFORE building chunks (optional - slow on large maps)
+	if rivers_enabled:
+		generation_progress.emit("Extracting rivers", 0.55)
+		_extract_and_carve_rivers()
+		_build_water_proximity_mask()
+
 	# Load initial chunks
 	generation_progress.emit("Loading chunks", 0.6)
 	_load_initial_chunks()
+
+	# Build river water surface meshes
+	if rivers_enabled:
+		generation_progress.emit("Building water", 0.9)
+		_build_river_meshes()
 
 	is_ready = true
 	generation_progress.emit("Complete", 1.0)
@@ -358,3 +380,125 @@ func load_all_chunks() -> void:
 				_load_chunk(coord)
 
 	print("[TerrainManager] Loaded all %d chunks" % chunks.size())
+
+
+# ============================================================================
+# RIVER SYSTEM
+# ============================================================================
+
+## Extract rivers from heightmap and carve riverbeds
+func _extract_and_carve_rivers() -> void:
+	# Free prior river meshes
+	for rm in river_meshes:
+		if is_instance_valid(rm):
+			rm.queue_free()
+	river_meshes.clear()
+	river_paths.clear()
+
+	var gen := RiverGeneratorClass.new()
+	gen.min_river_length = 50
+	gen.base_width = 6.0
+	gen.width_growth = 0.08
+	# Use fast gradient descent instead of slow D8 flow accumulation
+	var paths: Array = gen.extract_rivers_fast(heightmap, river_count)
+	river_paths = paths
+
+	# Smooth paths (D8 discretization is jaggy)
+	for path in river_paths:
+		_smooth_river_path(path)
+
+	# Carve riverbeds into heightmap
+	for path in river_paths:
+		_carve_riverbed(path)
+
+	print("[TerrainManager] Extracted %d river paths" % river_paths.size())
+
+
+## Smooth a river path with windowed averaging
+func _smooth_river_path(path) -> void:
+	if path.points.size() < 5:
+		return
+	var smoothed := PackedVector2Array()
+	smoothed.resize(path.points.size())
+	smoothed[0] = path.points[0]
+	smoothed[path.points.size() - 1] = path.points[path.points.size() - 1]
+	for i in range(1, path.points.size() - 1):
+		var prev: Vector2 = path.points[i - 1]
+		var curr: Vector2 = path.points[i]
+		var next_pt: Vector2 = path.points[i + 1]
+		smoothed[i] = (prev + curr * 2.0 + next_pt) * 0.25
+	path.points = smoothed
+
+
+## Carve riverbed into heightmap (must happen BEFORE chunk mesh generation)
+func _carve_riverbed(path) -> void:
+	var carve_depth_meters: float = 1.8
+	var carve_radius: int = 2  # cells perpendicular
+	for i in path.points.size():
+		var p: Vector2 = path.points[i]
+		var center_cell: Vector2i = heightmap.world_to_cell(p.x, p.y)
+		for dz in range(-carve_radius, carve_radius + 1):
+			for dx in range(-carve_radius, carve_radius + 1):
+				var nx: int = center_cell.x + dx
+				var nz: int = center_cell.y + dz
+				if nx < 0 or nx >= heightmap.size:
+					continue
+				if nz < 0 or nz >= heightmap.size:
+					continue
+				var dist: float = sqrt(float(dx * dx + dz * dz))
+				if dist > float(carve_radius):
+					continue
+				var falloff: float = 1.0 - (dist / float(carve_radius))
+				var current: float = heightmap.get_cell(nx, nz)
+				var depth_normalized: float = (carve_depth_meters * falloff) / height_scale
+				heightmap.set_cell(nx, nz, maxf(0.0, current - depth_normalized))
+
+
+## Build river water surface meshes after terrain chunks are loaded
+func _build_river_meshes() -> void:
+	for path in river_paths:
+		if path.size() < 2:
+			continue
+		var rm = RiverMeshClass.new()
+		rm.name = "River_%d" % river_meshes.size()
+		add_child(rm)
+		rm.build_from_path(path.points, path.widths, heightmap)
+		river_meshes.append(rm)
+	print("[TerrainManager] Built %d river meshes" % river_meshes.size())
+
+
+## Build proximity mask for rice paddy clustering near rivers
+func _build_water_proximity_mask() -> void:
+	var mask_size: int = heightmap.size
+	near_water_mask = PackedByteArray()
+	near_water_mask.resize(mask_size * mask_size)
+	near_water_mask.fill(0)
+
+	var influence_radius: int = 8  # cells (~16m at 2m cell size)
+	var r_sq: int = influence_radius * influence_radius
+	for path in river_paths:
+		for p: Vector2 in path.points:
+			var center_cell: Vector2i = heightmap.world_to_cell(p.x, p.y)
+			for dz in range(-influence_radius, influence_radius + 1):
+				for dx in range(-influence_radius, influence_radius + 1):
+					var nx: int = center_cell.x + dx
+					var nz: int = center_cell.y + dz
+					if nx < 0 or nx >= mask_size:
+						continue
+					if nz < 0 or nz >= mask_size:
+						continue
+					if dx * dx + dz * dz > r_sq:
+						continue
+					near_water_mask[nz * mask_size + nx] = 1
+
+
+## Check if a world position is near water (for rice paddy clustering)
+func is_near_water(world_x: float, world_z: float) -> bool:
+	if near_water_mask.is_empty():
+		return false
+	var cell: Vector2i = heightmap.world_to_cell(world_x, world_z)
+	if cell.x < 0 or cell.x >= heightmap.size:
+		return false
+	if cell.y < 0 or cell.y >= heightmap.size:
+		return false
+	return near_water_mask[cell.y * heightmap.size + cell.x] == 1

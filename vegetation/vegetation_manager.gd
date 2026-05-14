@@ -64,6 +64,9 @@ var _min_slope_dot: float
 var _camera: Camera3D
 var _chunk_size: float = 256.0
 
+# TerrainManager reference for water proximity checks
+var _terrain_manager: Node = null
+
 # Frustum culling accumulator (don't check every frame)
 var _frustum_accumulator: float = 0.0
 const FRUSTUM_UPDATE_INTERVAL := 0.1  # 10Hz
@@ -251,7 +254,7 @@ func generate_for_chunk(chunk_coord: Vector2i, heightmap: Object, chunk_size: fl
 			var slope_dot := normal.dot(Vector3.UP)
 
 			# Determine terrain type based on conditions
-			var terrain_type := _determine_terrain_type(height, slope_dot, rng)
+			var terrain_type := _determine_terrain_type(height, slope_dot, rng, world_x, world_z)
 			terrain[bundle_idx] = terrain_type
 
 	_chunk_terrain[chunk_coord] = terrain
@@ -261,14 +264,22 @@ func generate_for_chunk(chunk_coord: Vector2i, heightmap: Object, chunk_size: fl
 
 
 ## Determine terrain type for a bundle
-func _determine_terrain_type(height: float, slope_dot: float, rng: RandomNumberGenerator) -> int:
+## world_x/world_z are passed for water proximity checks
+func _determine_terrain_type(height: float, slope_dot: float, rng: RandomNumberGenerator, world_x: float = 0.0, world_z: float = 0.0) -> int:
 	# Steep slopes = clear
 	if slope_dot < _min_slope_dot:
 		return TerrainType.CLEAR
 
-	# Low flat areas have chance of rice paddy
-	if height < 20.0 and slope_dot > 0.95 and rng.randf() < 0.3:
-		return TerrainType.RICE_PADDY
+	# Check water proximity for rice paddy clustering
+	var near_water := false
+	if _terrain_manager and _terrain_manager.has_method("is_near_water"):
+		near_water = _terrain_manager.is_near_water(world_x, world_z)
+
+	# Low flat areas have chance of rice paddy - higher near water
+	if height < 30.0 and slope_dot > 0.93:
+		var paddy_chance: float = 0.7 if near_water else 0.15
+		if rng.randf() < paddy_chance:
+			return TerrainType.RICE_PADDY
 
 	# Very flat = grassland chance
 	if slope_dot > 0.98 and rng.randf() < 0.2:
