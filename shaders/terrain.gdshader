@@ -7,8 +7,11 @@ uniform sampler2D ground_roughness : filter_linear_mipmap, repeat_enable;
 uniform float ground_texture_scale = 0.1;  // How many meters per texture repeat
 uniform float ground_texture_blend = 0.4;  // How much texture vs vertex color (0=vertex only, 1=texture only)
 
-// Overlay textures for destruction
-uniform sampler2D scar_texture : filter_linear, repeat_disable;
+// Overlay texture for clearing (brown dirt where jungle is cleared)
+// NOTE: Damage scars are rendered as Decals (see damage_system.gd) — they do NOT
+// go through the terrain shader. Do not re-add a scar_texture sampler here:
+// unbound samplers return (1,1,1,1) which paints terrain white above the
+// ground-texture fade threshold (visible on hilltops).
 uniform sampler2D clearing_texture : filter_linear, repeat_disable;
 
 // Terrain parameters
@@ -59,11 +62,19 @@ void fragment() {
 	// Start with vertex color (terrain type tinting: jungle green, paddy bright, highland brown)
 	vec3 color = v_color;
 
-	// Blend ground texture with vertex color using overlay blend
-	// This preserves the vertex color tints while adding texture detail
-	vec3 blended_ground = color * ground_color * 2.0;  // Multiply-ish blend
-	blended_ground = clamp(blended_ground, vec3(0.0), vec3(1.0));
-	color = mix(color, blended_ground, ground_texture_blend);
+	// Calculate normalized height for blend falloff (no texture above ~60% elevation)
+	float height_factor = clamp(world_pos.y / height_scale, 0.0, 1.0);
+	float texture_fade = 1.0 - smoothstep(0.3, 0.6, height_factor);
+
+	// Simple overlay blend: tint vertex color by texture without exceeding original brightness
+	// Bias texture toward mid-gray to prevent darkening or brightening extremes
+	vec3 tex_biased = ground_color * 0.6 + 0.2;  // Compress to 0.2-0.8 range
+	vec3 blend_result = color * tex_biased * 1.5;  // Slight boost, clamped below
+	blend_result = clamp(blend_result, vec3(0.0), color);  // Never brighter than vertex color
+
+	// Apply texture blend with height-based fadeout
+	float effective_blend = ground_texture_blend * texture_fade;
+	color = mix(color, blend_result, effective_blend);
 
 	// Calculate slope for roughness fallback
 	float slope = 1.0 - abs(vertex_normal.y);
@@ -82,12 +93,11 @@ void fragment() {
 	vec4 clearing = texture(clearing_texture, uv);
 	color = mix(color, clearing.rgb, clearing.a);
 
-	// Apply damage scars (craters, burns, etc.)
-	vec4 scar = texture(scar_texture, uv);
-	color = mix(color, scar.rgb, scar.a * 0.85);
+	// Damage scars are rendered as Decals — see damage_system.gd._create_scar_decal.
+	// Do NOT add a scar_texture mix here without binding the uniform first.
 
-	// Apply noise variation
-	color += vec3(variation) * 0.3;
+	// Apply noise variation (reduced to prevent white peaks)
+	color += vec3(variation) * 0.1;
 	color = clamp(color, vec3(0.0), vec3(1.0));
 
 	ALBEDO = color;

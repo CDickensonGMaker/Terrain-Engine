@@ -136,9 +136,15 @@ func apply_damage(world_pos: Vector3, type: DamageType, intensity: float = 1.0) 
 	# Apply to terrain manager's heightmap (this also rebuilds affected chunks)
 	terrain_manager.modify_terrain(world_pos, radius_meters, crater_func)
 
-	# Clear vegetation in damaged area
+	# Clear vegetation in damaged area. Pass heightmap so clear_area re-materializes
+	# the surviving (non-cleared) bundles; otherwise the MultiMesh stays wiped.
 	if vegetation_manager and vegetation_manager.has_method("clear_area"):
-		vegetation_manager.clear_area(world_pos, radius_meters, terrain_manager.chunk_size)
+		vegetation_manager.clear_area(
+			world_pos,
+			radius_meters,
+			terrain_manager.chunk_size,
+			terrain_manager.heightmap,
+		)
 
 	# Clear billboards in damaged area
 	if billboard_vegetation and billboard_vegetation.has_method("clear_chunk"):

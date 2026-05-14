@@ -107,8 +107,17 @@ func _rebuild_chunk_immediate(coord: Vector2i) -> void:
 	if not chunks.has(coord):
 		return
 
-	# Unload and reload the chunk
-	_unload_chunk(coord)
+	# Clear vegetation visuals but preserve placement cache
+	if vegetation_manager and vegetation_manager.has_method("clear_chunk_visuals"):
+		vegetation_manager.clear_chunk_visuals(coord)
+
+	# Unload chunk without touching vegetation (we already handled it)
+	var chunk: Node3D = chunks[coord]
+	chunk.unload()
+	chunk.queue_free()
+	chunks.erase(coord)
+
+	# Reload chunk - generate_for_chunk will re-materialize from cache
 	_load_chunk(coord)
 
 
@@ -283,6 +292,11 @@ func _unload_chunk(coord: Vector2i) -> void:
 	chunk.unload()
 	chunk.queue_free()
 	chunks.erase(coord)
+
+	# Full clear vegetation when streaming out (not rebuilding)
+	if vegetation_manager and vegetation_manager.has_method("clear_chunk_full"):
+		vegetation_manager.clear_chunk_full(coord)
+
 	chunk_unloaded.emit(coord)
 
 
@@ -333,9 +347,11 @@ func _rebuild_chunks_in_region(cell_region: Rect2i) -> void:
 		for cx in range(min_chunk.x, max_chunk.x + 1):
 			var coord := Vector2i(cx, cz)
 			if chunks.has(coord):
-				# Unload and reload chunk
-				_unload_chunk(coord)
-				_load_chunk(coord)
+				# Use _rebuild_chunk_immediate which preserves the vegetation cache.
+				# _unload_chunk calls vegetation_manager.clear_chunk_full() which wipes
+				# _chunk_terrain and _chunk_placements, causing trees to respawn in
+				# their original positions after every explosion.
+				_rebuild_chunk_immediate(coord)
 
 
 ## Set camera for streaming

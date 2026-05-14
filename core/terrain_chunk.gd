@@ -171,6 +171,7 @@ static func _create_shared_material() -> void:
 			# Set texture parameters
 			shader_mat.set_shader_parameter("ground_texture_scale", 0.08)  # ~12m per tile
 			shader_mat.set_shader_parameter("ground_texture_blend", 0.35)  # Subtle blend
+			shader_mat.set_shader_parameter("height_scale", 280.0)  # Match terrain height scale
 
 			shared_material = shader_mat
 			_using_shader = true
@@ -213,11 +214,11 @@ static func set_shader_parameters(params: Dictionary) -> void:
 			shader_mat.set_shader_parameter(key, params[key])
 
 
-## Height-based terrain coloring with vegetation type override
+## Terrain coloring with vegetation type override
 ## VegetationManager.TerrainType values:
 ## 0=CLEAR, 1=RICE_PADDY, 2=GRASSLAND, 3=LIGHT_JUNGLE, 4=MEDIUM_JUNGLE, 5=HEAVY_JUNGLE
-func _get_terrain_color(_h: float, normalized_h: float, local_x: float, local_z: float, vegetation_terrain: PackedByteArray, bundles_per_chunk: int) -> Color:
-	# Override color based on vegetation bundle type (rice paddies, heavy jungle)
+func _get_terrain_color(_h: float, _normalized_h: float, local_x: float, local_z: float, vegetation_terrain: PackedByteArray, bundles_per_chunk: int) -> Color:
+	# Vegetation overrides still work
 	if not vegetation_terrain.is_empty() and bundles_per_chunk > 0:
 		var bundle_meters: float = chunk_size / float(bundles_per_chunk)
 		var bx: int = int(local_x / bundle_meters)
@@ -227,34 +228,13 @@ func _get_terrain_color(_h: float, normalized_h: float, local_x: float, local_z:
 			if idx < vegetation_terrain.size():
 				var terrain_type: int = vegetation_terrain[idx]
 				match terrain_type:
-					1:  # RICE_PADDY — bright muddy green
+					1:  # RICE_PADDY
 						return Color(0.42, 0.58, 0.22)
-					5:  # HEAVY_JUNGLE — darker saturated green
+					5:  # HEAVY_JUNGLE
 						return Color(0.10, 0.22, 0.07)
 
-	# Fall through to height-based coloring
-	var t: float = clampf(normalized_h, 0.0, 1.0)
-
-	# Lowland (rice paddies) -> Jungle -> Highlands -> Cliffs
-	if t < 0.15:
-		# Lowland - rice paddy green
-		return Color(0.18, 0.38, 0.12).lerp(Color(0.12, 0.32, 0.08), t / 0.15)
-	elif t < 0.4:
-		# Jungle - dense vegetation
-		var blend: float = (t - 0.15) / 0.25
-		return Color(0.12, 0.32, 0.08).lerp(Color(0.15, 0.28, 0.1), blend)
-	elif t < 0.65:
-		# Highlands - subtropical
-		var blend: float = (t - 0.4) / 0.25
-		return Color(0.15, 0.28, 0.1).lerp(Color(0.25, 0.32, 0.18), blend)
-	elif t < 0.85:
-		# Slopes - exposed earth
-		var blend: float = (t - 0.65) / 0.2
-		return Color(0.25, 0.32, 0.18).lerp(Color(0.4, 0.35, 0.25), blend)
-	else:
-		# Peaks - rock
-		var blend: float = (t - 0.85) / 0.15
-		return Color(0.4, 0.35, 0.25).lerp(Color(0.5, 0.45, 0.4), blend)
+	# UNIFORM BASE GREEN - no height variation
+	return Color(0.18, 0.35, 0.12)
 
 
 ## Create optional collision for raycast picking (not for unit movement)
