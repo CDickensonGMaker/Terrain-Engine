@@ -1,5 +1,12 @@
 shader_type spatial;
 
+// Ground texture (jungle floor)
+uniform sampler2D ground_diffuse : source_color, filter_linear_mipmap, repeat_enable;
+uniform sampler2D ground_normal : hint_normal, filter_linear_mipmap, repeat_enable;
+uniform sampler2D ground_roughness : filter_linear_mipmap, repeat_enable;
+uniform float ground_texture_scale = 0.1;  // How many meters per texture repeat
+uniform float ground_texture_blend = 0.4;  // How much texture vs vertex color (0=vertex only, 1=texture only)
+
 // Overlay textures for destruction
 uniform sampler2D scar_texture : filter_linear, repeat_disable;
 uniform sampler2D clearing_texture : filter_linear, repeat_disable;
@@ -41,10 +48,24 @@ void vertex() {
 }
 
 void fragment() {
-	// Use vertex color directly (computed per-vertex in terrain_chunk.gd)
+	// Tiled UV for ground texture (world-space, scaled)
+	vec2 ground_uv = world_pos.xz * ground_texture_scale;
+
+	// Sample ground textures
+	vec3 ground_color = texture(ground_diffuse, ground_uv).rgb;
+	vec3 ground_norm = texture(ground_normal, ground_uv).rgb;
+	float ground_rough = texture(ground_roughness, ground_uv).r;
+
+	// Start with vertex color (terrain type tinting: jungle green, paddy bright, highland brown)
 	vec3 color = v_color;
 
-	// Calculate slope for roughness
+	// Blend ground texture with vertex color using overlay blend
+	// This preserves the vertex color tints while adding texture detail
+	vec3 blended_ground = color * ground_color * 2.0;  // Multiply-ish blend
+	blended_ground = clamp(blended_ground, vec3(0.0), vec3(1.0));
+	color = mix(color, blended_ground, ground_texture_blend);
+
+	// Calculate slope for roughness fallback
 	float slope = 1.0 - abs(vertex_normal.y);
 	slope = clamp(slope, 0.0, 1.0);
 
@@ -70,5 +91,12 @@ void fragment() {
 	color = clamp(color, vec3(0.0), vec3(1.0));
 
 	ALBEDO = color;
-	ROUGHNESS = mix(0.75, 0.95, slope);
+
+	// Apply normal map (convert from tangent space)
+	NORMAL_MAP = ground_norm;
+	NORMAL_MAP_DEPTH = 0.5;
+
+	// Blend texture roughness with slope-based roughness
+	float base_rough = mix(0.75, 0.95, slope);
+	ROUGHNESS = mix(base_rough, ground_rough, ground_texture_blend);
 }

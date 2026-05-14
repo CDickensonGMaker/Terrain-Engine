@@ -145,9 +145,36 @@ static func _create_shared_material() -> void:
 			var shader_mat := ShaderMaterial.new()
 			shader_mat.shader = shader
 
+			# Load ground textures (jungle floor from Poly Haven CC0)
+			var diff_path := "res://textures/jungle_floor_diff.jpg"
+			var norm_path := "res://textures/jungle_floor_normal.jpg"
+			var rough_path := "res://textures/jungle_floor_rough.jpg"
+
+			if ResourceLoader.exists(diff_path):
+				var diff_tex := load(diff_path) as Texture2D
+				if diff_tex:
+					shader_mat.set_shader_parameter("ground_diffuse", diff_tex)
+					print("[TerrainChunk] Loaded ground diffuse texture")
+
+			if ResourceLoader.exists(norm_path):
+				var norm_tex := load(norm_path) as Texture2D
+				if norm_tex:
+					shader_mat.set_shader_parameter("ground_normal", norm_tex)
+					print("[TerrainChunk] Loaded ground normal texture")
+
+			if ResourceLoader.exists(rough_path):
+				var rough_tex := load(rough_path) as Texture2D
+				if rough_tex:
+					shader_mat.set_shader_parameter("ground_roughness", rough_tex)
+					print("[TerrainChunk] Loaded ground roughness texture")
+
+			# Set texture parameters
+			shader_mat.set_shader_parameter("ground_texture_scale", 0.08)  # ~12m per tile
+			shader_mat.set_shader_parameter("ground_texture_blend", 0.35)  # Subtle blend
+
 			shared_material = shader_mat
 			_using_shader = true
-			print("[TerrainChunk] Using terrain shader with vertex colors")
+			print("[TerrainChunk] Using terrain shader with ground textures")
 			return
 
 	# Fallback to basic material
