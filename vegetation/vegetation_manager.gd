@@ -31,15 +31,14 @@ var bundle_meters: float:
 
 # Terrain type properties: [tree_chance, tree_count_min, tree_count_max, blocks_los, move_speed]
 # move_speed: 1.0 = full speed, 0.5 = half speed, etc.
-# OPTIMIZED DENSITY for Intel UHD Graphics - 60% reduction
-# Fog + billboards provide density illusion at distance
+# RESTORED DENSITY - billboards provide thick jungle illusion at distance
 const TYPE_PROPS := {
-	TerrainType.CLEAR: [0.0, 0, 0, false, 1.0],
-	TerrainType.RICE_PADDY: [0.0, 0, 0, false, 0.4],      # Water/mud - very slow
-	TerrainType.GRASSLAND: [0.02, 0, 1, false, 0.95],     # Very sparse (was 0.05)
-	TerrainType.LIGHT_JUNGLE: [0.10, 0, 1, false, 0.8],   # Sparse (was 0.25)
-	TerrainType.MEDIUM_JUNGLE: [0.12, 0, 1, true, 0.5],   # Reduced (was 0.4, 1-2)
-	TerrainType.HEAVY_JUNGLE: [0.20, 0, 1, true, 0.3],    # Reduced (was 0.6, 1-2)
+	TerrainType.CLEAR:         [0.00, 0, 0, false, 1.0],
+	TerrainType.RICE_PADDY:    [0.00, 0, 0, false, 0.4],   # Water/mud - very slow
+	TerrainType.GRASSLAND:     [0.08, 0, 1, false, 0.95],  # Very sparse
+	TerrainType.LIGHT_JUNGLE:  [0.30, 1, 2, false, 0.8],   # Sparse
+	TerrainType.MEDIUM_JUNGLE: [0.55, 1, 3, true,  0.5],   # Moderate density
+	TerrainType.HEAVY_JUNGLE:  [0.80, 2, 4, true,  0.3],   # Dense canopy
 }
 
 # Loaded vegetation meshes

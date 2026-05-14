@@ -6,7 +6,17 @@ class_name BillboardVegetation
 
 const BILLBOARD_RANGE_MIN := 80.0   # Start showing billboards
 const BILLBOARD_RANGE_MAX := 800.0  # Stop showing billboards (extended range, no fog)
-const BILLBOARDS_PER_CHUNK := 240   # Very high density for thick jungle feeling
+const BILLBOARDS_PER_CHUNK := 6000  # High candidate pool - most filtered by terrain type
+
+# Per-tier acceptance rates for billboards (0=CLEAR to 5=HEAVY_JUNGLE)
+const TIER_ACCEPT := {
+	0: 0.00,  # CLEAR
+	1: 0.00,  # RICE_PADDY
+	2: 0.05,  # GRASSLAND
+	3: 0.35,  # LIGHT_JUNGLE
+	4: 0.70,  # MEDIUM_JUNGLE
+	5: 0.95,  # HEAVY_JUNGLE
+}
 
 # Billboard meshes (trees, bamboo, bushes)
 var _tree_meshes: Array[ArrayMesh] = []
@@ -36,12 +46,21 @@ var _camera: Camera3D
 # Chunk size
 var _chunk_size: float = 256.0
 
+# Density noise for organic clumping
+var _density_noise: FastNoiseLite
+
 # Update accumulator
 var _lod_accumulator: float = 0.0
 const LOD_UPDATE_INTERVAL := 0.1  # 10Hz
 
 
 func _ready() -> void:
+	# Initialize density noise for organic clumping
+	_density_noise = FastNoiseLite.new()
+	_density_noise.noise_type = FastNoiseLite.TYPE_PERLIN
+	_density_noise.frequency = 0.005
+	_density_noise.seed = 12345
+
 	_load_billboard_textures()
 	_create_billboard_meshes()
 
@@ -230,6 +249,9 @@ func _build_placements(coord: Vector2i, heightmap: Object) -> void:
 		if bundle_z < 0 or bundle_z >= bundles_per_side:
 			continue
 
+		# Compute clump factor for organic variation (0..1)
+		var clump: float = (_density_noise.get_noise_2d(world_x, world_z) + 1.0) * 0.5
+
 		var height := 0.0
 		if heightmap and heightmap.has_method("sample_world"):
 			height = heightmap.sample_world(world_x, world_z)
@@ -245,6 +267,8 @@ func _build_placements(coord: Vector2i, heightmap: Object) -> void:
 			"mesh_idx": mesh_idx,
 			"bundle_x": bundle_x,
 			"bundle_z": bundle_z,
+			"accept_roll": rng.randf(),  # Baked at build time, stable forever
+			"clump": clump,
 		})
 
 	_chunk_placements[coord] = placements
@@ -261,8 +285,15 @@ func _materialize_chunk(coord: Vector2i, vegetation_terrain: PackedByteArray) ->
 		if bundle_idx >= vegetation_terrain.size():
 			continue
 		var terrain_type: int = vegetation_terrain[bundle_idx]
-		# Skip clear, rice paddy, and grassland areas
-		if terrain_type < 3:  # CLEAR, RICE_PADDY, GRASSLAND
+
+		# Get base acceptance rate for this terrain tier
+		var accept: float = TIER_ACCEPT.get(terrain_type, 0.0)
+		if accept <= 0.0:
+			continue
+
+		# Modulate acceptance by clump factor for organic thickets/gaps
+		var modulated: float = accept * (0.35 + 1.3 * p.clump)  # range ~0.35x..1.65x base
+		if p.accept_roll > modulated:
 			continue
 
 		if not transforms_by_mesh.has(p.mesh_idx):
