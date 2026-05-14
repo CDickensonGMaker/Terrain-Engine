@@ -22,7 +22,11 @@ var _tree_materials: Array[StandardMaterial3D] = []
 var _bush_material: StandardMaterial3D
 
 # Per-chunk billboard instances
-var _chunk_billboards: Dictionary = {}  # Vector2i -> MultiMeshInstance3D
+var _chunk_billboards: Dictionary = {}  # Vector2i -> Node3D (container)
+
+# Placement cache - built once per chunk, survives regen
+# coord -> Array of placement dicts {position, rot_y, scale, mesh_idx, bundle_x, bundle_z}
+var _chunk_placements: Dictionary = {}
 
 # Reference to terrain system
 var _terrain_manager: Node
@@ -189,21 +193,29 @@ func _create_billboard_meshes() -> void:
 
 
 ## Generate billboards for a chunk
+## Uses placement cache pattern to prevent tree teleportation on regen
 func generate_for_chunk(coord: Vector2i, heightmap: Object, vegetation_terrain: PackedByteArray) -> void:
 	if _tree_meshes.is_empty():
 		return
 
-	clear_chunk(coord)
+	_clear_chunk_nodes(coord)  # Frees MultiMesh nodes only, keeps cache
 
+	# Build the placement cache on first visit, reuse on subsequent calls
+	if not _chunk_placements.has(coord):
+		_build_placements(coord, heightmap)
+
+	_materialize_chunk(coord, vegetation_terrain)
+
+
+## Build placement cache - RNG lives here, called once per chunk
+func _build_placements(coord: Vector2i, heightmap: Object) -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = hash(coord) + 9999  # Different seed than 3D trees
 
-	var transforms: Array[Transform3D] = []
-	var mesh_indices: Array[int] = []
-
-	# Sample positions across the chunk
+	var placements: Array = []
 	var world_offset_x := coord.x * _chunk_size
 	var world_offset_z := coord.y * _chunk_size
+	var bundles_per_side := int(_chunk_size / 8.0)
 
 	for i in BILLBOARDS_PER_CHUNK:
 		var local_x := rng.randf() * _chunk_size
@@ -211,46 +223,64 @@ func generate_for_chunk(coord: Vector2i, heightmap: Object, vegetation_terrain: 
 		var world_x := world_offset_x + local_x
 		var world_z := world_offset_z + local_z
 
-		# Check vegetation density at this point (skip cleared areas)
-		var bundle_x := int(local_x / 8.0)  # Assume 8m bundle size
+		var bundle_x := int(local_x / 8.0)
 		var bundle_z := int(local_z / 8.0)
-		var bundles_per_side := int(_chunk_size / 8.0)
+		if bundle_x < 0 or bundle_x >= bundles_per_side:
+			continue
+		if bundle_z < 0 or bundle_z >= bundles_per_side:
+			continue
 
-		if bundle_x >= 0 and bundle_x < bundles_per_side and bundle_z >= 0 and bundle_z < bundles_per_side:
-			var bundle_idx := bundle_z * bundles_per_side + bundle_x
-			if bundle_idx < vegetation_terrain.size():
-				var terrain_type: int = vegetation_terrain[bundle_idx]
-				# Skip clear, rice paddy, and grassland areas
-				if terrain_type < 3:  # CLEAR, RICE_PADDY, GRASSLAND
-					continue
-
-		# Get height from terrain
 		var height := 0.0
 		if heightmap and heightmap.has_method("sample_world"):
 			height = heightmap.sample_world(world_x, world_z)
 
-		# Random rotation and scale
 		var rot_y := rng.randf() * TAU
-		var scale := rng.randf_range(0.7, 1.3)
+		var scale_val := rng.randf_range(0.7, 1.3)
+		var mesh_idx := rng.randi() % _tree_meshes.size() if not _tree_meshes.is_empty() else 0
+
+		placements.append({
+			"position": Vector3(world_x, height, world_z),
+			"rot_y": rot_y,
+			"scale": scale_val,
+			"mesh_idx": mesh_idx,
+			"bundle_x": bundle_x,
+			"bundle_z": bundle_z,
+		})
+
+	_chunk_placements[coord] = placements
+
+
+## Materialize visible billboards from cached placements
+func _materialize_chunk(coord: Vector2i, vegetation_terrain: PackedByteArray) -> void:
+	var placements: Array = _chunk_placements[coord]
+	var bundles_per_side := int(_chunk_size / 8.0)
+	var transforms_by_mesh: Dictionary = {}
+
+	for p in placements:
+		var bundle_idx: int = p.bundle_z * bundles_per_side + p.bundle_x
+		if bundle_idx >= vegetation_terrain.size():
+			continue
+		var terrain_type: int = vegetation_terrain[bundle_idx]
+		# Skip clear, rice paddy, and grassland areas
+		if terrain_type < 3:  # CLEAR, RICE_PADDY, GRASSLAND
+			continue
+
+		if not transforms_by_mesh.has(p.mesh_idx):
+			transforms_by_mesh[p.mesh_idx] = []
 
 		var t := Transform3D.IDENTITY
-		t = t.rotated(Vector3.UP, rot_y)
-		t = t.scaled(Vector3.ONE * scale)
-		t.origin = Vector3(world_x, height, world_z)
+		t = t.rotated(Vector3.UP, p.rot_y)
+		t = t.scaled(Vector3.ONE * p.scale)
+		t.origin = p.position
+		transforms_by_mesh[p.mesh_idx].append(t)
 
-		transforms.append(t)
-		mesh_indices.append(rng.randi() % _tree_meshes.size())
+	# Count total for logging
+	var total_count := 0
+	for mesh_idx in transforms_by_mesh:
+		total_count += transforms_by_mesh[mesh_idx].size()
 
-	if transforms.is_empty():
+	if total_count == 0:
 		return
-
-	# Group by mesh type and create MultiMeshes
-	var mesh_groups: Dictionary = {}  # mesh_index -> Array[Transform3D]
-	for i in transforms.size():
-		var idx := mesh_indices[i]
-		if not mesh_groups.has(idx):
-			mesh_groups[idx] = []
-		mesh_groups[idx].append(transforms[i])
 
 	# Create a container for this chunk's billboards
 	var container := Node3D.new()
@@ -258,8 +288,8 @@ func generate_for_chunk(coord: Vector2i, heightmap: Object, vegetation_terrain: 
 	add_child(container)
 
 	# Create MultiMesh for each mesh type
-	for mesh_idx: int in mesh_groups:
-		var group_transforms: Array = mesh_groups[mesh_idx]
+	for mesh_idx: int in transforms_by_mesh:
+		var group_transforms: Array = transforms_by_mesh[mesh_idx]
 		if group_transforms.is_empty():
 			continue
 
@@ -289,11 +319,11 @@ func generate_for_chunk(coord: Vector2i, heightmap: Object, vegetation_terrain: 
 
 	_chunk_billboards[coord] = container
 	container.visible = false  # Start hidden, LOD system will enable
-	print("[BillboardVegetation] Generated %d billboards for chunk %s" % [transforms.size(), coord])
+	print("[BillboardVegetation] Generated %d billboards for chunk %s" % [total_count, coord])
 
 
-## Clear billboards for a chunk
-func clear_chunk(coord: Vector2i) -> void:
+## Clear billboard nodes only (keeps placement cache for regen)
+func _clear_chunk_nodes(coord: Vector2i) -> void:
 	if _chunk_billboards.has(coord):
 		var container: Node3D = _chunk_billboards[coord]
 		if is_instance_valid(container):
@@ -301,12 +331,20 @@ func clear_chunk(coord: Vector2i) -> void:
 		_chunk_billboards.erase(coord)
 
 
-## Clear all billboards
+## Full unload - clears both nodes AND placement cache
+## Call this on chunk streaming unload, NOT on destruction regen
+func clear_chunk(coord: Vector2i) -> void:
+	_clear_chunk_nodes(coord)
+	_chunk_placements.erase(coord)
+
+
+## Clear all billboards and caches
 func clear_all() -> void:
 	for container: Node3D in _chunk_billboards.values():
 		if is_instance_valid(container):
 			container.queue_free()
 	_chunk_billboards.clear()
+	_chunk_placements.clear()
 
 
 ## Update billboard visibility based on camera distance
