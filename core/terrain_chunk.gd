@@ -51,7 +51,9 @@ func _ready() -> void:
 
 ## Build mesh from heightmap region data
 ## region_data: PackedFloat32Array of normalized heights (grid_resolution+1 x grid_resolution+1)
-func build_mesh(region_data: PackedFloat32Array, h_scale: float = 280.0) -> void:
+## vegetation_terrain: Optional PackedByteArray of terrain types per bundle (for rice paddy coloring)
+## bundles_per_chunk: Number of bundles per side (typically chunk_size / 8)
+func build_mesh(region_data: PackedFloat32Array, h_scale: float = 280.0, vegetation_terrain: PackedByteArray = PackedByteArray(), bundles_per_chunk: int = 0) -> void:
 	height_scale = h_scale
 
 	if region_data.size() < (grid_resolution + 1) * (grid_resolution + 1):
@@ -77,7 +79,7 @@ func build_mesh(region_data: PackedFloat32Array, h_scale: float = 280.0) -> void
 			var h: float = region_data[z * data_width + x] * height_scale
 
 			vertices.append(Vector3(local_x, h, local_z))
-			colors.append(_get_terrain_color(h, region_data[z * data_width + x]))
+			colors.append(_get_terrain_color(h, region_data[z * data_width + x], local_x, local_z, vegetation_terrain, bundles_per_chunk))
 
 	# Generate triangles (counter-clockwise winding for upward normals)
 	for z in range(grid_resolution):
@@ -184,9 +186,26 @@ static func set_shader_parameters(params: Dictionary) -> void:
 			shader_mat.set_shader_parameter(key, params[key])
 
 
-## Height-based terrain coloring
-func _get_terrain_color(h: float, normalized_h: float) -> Color:
-	# Vietnam-style terrain coloring
+## Height-based terrain coloring with vegetation type override
+## VegetationManager.TerrainType values:
+## 0=CLEAR, 1=RICE_PADDY, 2=GRASSLAND, 3=LIGHT_JUNGLE, 4=MEDIUM_JUNGLE, 5=HEAVY_JUNGLE
+func _get_terrain_color(_h: float, normalized_h: float, local_x: float, local_z: float, vegetation_terrain: PackedByteArray, bundles_per_chunk: int) -> Color:
+	# Override color based on vegetation bundle type (rice paddies, heavy jungle)
+	if not vegetation_terrain.is_empty() and bundles_per_chunk > 0:
+		var bundle_meters: float = chunk_size / float(bundles_per_chunk)
+		var bx: int = int(local_x / bundle_meters)
+		var bz: int = int(local_z / bundle_meters)
+		if bx >= 0 and bx < bundles_per_chunk and bz >= 0 and bz < bundles_per_chunk:
+			var idx: int = bz * bundles_per_chunk + bx
+			if idx < vegetation_terrain.size():
+				var terrain_type: int = vegetation_terrain[idx]
+				match terrain_type:
+					1:  # RICE_PADDY — bright muddy green
+						return Color(0.42, 0.58, 0.22)
+					5:  # HEAVY_JUNGLE — darker saturated green
+						return Color(0.10, 0.22, 0.07)
+
+	# Fall through to height-based coloring
 	var t: float = clampf(normalized_h, 0.0, 1.0)
 
 	# Lowland (rice paddies) -> Jungle -> Highlands -> Cliffs

@@ -34,6 +34,7 @@ var chunk_cells: int
 # Reference
 var camera: Camera3D
 var terrain_generator: Node  # TerrainEngine autoload
+var vegetation_manager: Node  # VegetationManager - set externally for rice paddy coloring
 
 # Deferred rebuild queue for async operations
 var _rebuild_queue: Array[Vector2i] = []
@@ -209,8 +210,17 @@ func _load_chunk(coord: Vector2i) -> void:
 	chunk.name = "Chunk_%d_%d" % [coord.x, coord.y]
 	add_child(chunk)
 
-	# Build mesh
-	chunk.build_mesh(region, height_scale)
+	# Classify vegetation BEFORE mesh build so the mesh can color rice paddies
+	var veg_bytes := PackedByteArray()
+	var bundles_per_chunk: int = 0
+	if vegetation_manager:
+		vegetation_manager.generate_for_chunk(coord, heightmap, chunk_size)
+		if vegetation_manager._chunk_terrain.has(coord):
+			veg_bytes = vegetation_manager._chunk_terrain[coord]
+			bundles_per_chunk = vegetation_manager._bundles_per_chunk
+
+	# Build mesh with vegetation bytes for rice paddy coloring
+	chunk.build_mesh(region, height_scale, veg_bytes, bundles_per_chunk)
 
 	# Create collision for raycasting
 	chunk.create_raycast_collision()

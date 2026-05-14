@@ -290,6 +290,11 @@ func _generate_initial_terrain() -> void:
 		terrain_engine.set_preset(0)  # ROLLING_HILLS
 		terrain_engine.height_scale = 280.0
 
+	# Wire vegetation_manager to terrain_manager BEFORE generation
+	# so rice paddies can be colored correctly during mesh build
+	if vegetation_manager:
+		terrain_manager.vegetation_manager = vegetation_manager
+
 	terrain_manager.generate_terrain()
 
 
@@ -354,14 +359,9 @@ func _on_terrain_ready() -> void:
 
 
 func _on_chunk_loaded(coord: Vector2i, is_playable: bool) -> void:
-	# Only generate vegetation for playable chunks
+	# Vegetation classification now happens in terrain_manager._load_chunk BEFORE mesh build
+	# (so rice paddies can be colored correctly). Only generate billboards here.
 	if is_playable:
-		vegetation_manager.generate_for_chunk(
-			coord,
-			terrain_manager.heightmap,
-			terrain_manager.chunk_size
-		)
-
 		# Generate billboards for this chunk if vegetation terrain data exists
 		if billboard_vegetation and vegetation_manager._chunk_terrain.has(coord):
 			billboard_vegetation.generate_for_chunk(
