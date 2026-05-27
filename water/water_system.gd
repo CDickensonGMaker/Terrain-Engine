@@ -9,6 +9,8 @@ const RiverGeneratorClass := preload("res://water/river_generator.gd")
 const RiverMeshClass := preload("res://water/river_mesh.gd")
 const PondDetectorClass := preload("res://water/pond_detector.gd")
 const WaterStaticMeshClass := preload("res://water/water_static_mesh.gd")
+const CoastalDetectorClass := preload("res://water/coastal_detector.gd")
+const WaterCoastalMeshClass := preload("res://water/water_coastal_mesh.gd")
 
 signal water_generated
 signal water_body_added(body: Resource)  # WaterBodyData
@@ -21,6 +23,10 @@ var water_by_chunk: Dictionary = {}  # Vector2i -> Array[int]
 
 ## Global sea level in meters (for coastal generation)
 var sea_level: float = 5.0
+
+## Which map edges have ocean (bitmask: 1=North, 2=East, 4=South, 8=West)
+## Set to 0 to disable coastal generation
+var ocean_edges: int = 0b0000  # Disabled by default
 
 ## Water type grid for O(1) lookups
 ## Each byte encodes: bits 0-2 = WaterType (0-6), bits 3-7 = depth_index (0-31)
@@ -80,8 +86,8 @@ func generate_water_bodies() -> void:
 	# Phase 2: Detect ponds and lakes
 	_generate_static_bodies()
 
-	# Phase 3: Generate coastal zones (to be implemented)
-	# _generate_coastal()
+	# Phase 3: Generate coastal zones
+	_generate_coastal()
 
 	# Build water map for O(1) lookups
 	_build_water_map()
@@ -228,6 +234,59 @@ func _generate_static_mesh(body: Resource, cells: Array) -> void:
 	var type_name: String = "Pond" if body.type == WaterBodyDataClass.Type.POND else "Lake"
 	static_mesh.name = "%s_%d" % [type_name, body.id]
 	_water_container.add_child(static_mesh)
+
+
+## Generate coastal zones from map edges
+func _generate_coastal() -> void:
+	if ocean_edges == 0:
+		return  # No coastal generation
+
+	var detector := CoastalDetectorClass.new()
+	detector.ocean_edges = ocean_edges
+	detector.sea_level = sea_level
+	detector.max_flood_distance = 150  # Max flood inland (cells)
+
+	var zones: Array = detector.detect_coastal(_heightmap, sea_level)
+
+	for zone in zones:
+		if zone.cells.size() < 10:
+			continue  # Skip tiny coastal fragments
+
+		var body := WaterBodyDataClass.new()
+		body.id = _next_id
+		_next_id += 1
+		body.type = WaterBodyDataClass.Type.COASTAL
+		body.elevation = sea_level
+		body.depth = zone.avg_depth
+		body.bounds = zone.bounds
+
+		# Store shoreline as polygon
+		body.polygon = zone.shoreline
+
+		# Add to registry
+		_register_water_body(body)
+
+		# Generate mesh
+		_generate_coastal_mesh(body, zone.cells)
+
+	print("[WaterSystem] Generated %d coastal zone(s)" % zones.size())
+
+
+## Generate mesh for a coastal zone
+func _generate_coastal_mesh(body: Resource, cells: Array) -> void:
+	var coastal_mesh := WaterCoastalMeshClass.new()
+
+	var typed_cells: Array[Vector2i] = []
+	for cell in cells:
+		typed_cells.append(cell)
+
+	coastal_mesh.build_from_cells(typed_cells, body.elevation, _heightmap)
+
+	body.mesh = coastal_mesh.mesh
+	body.mesh_instance = coastal_mesh
+
+	coastal_mesh.name = "Coastal_%d" % body.id
+	_water_container.add_child(coastal_mesh)
 
 
 ## Register a water body and update spatial index

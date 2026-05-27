@@ -341,6 +341,9 @@ func _on_terrain_ready() -> void:
 	# Initialize and generate water system
 	if water_system:
 		water_system.initialize(terrain_manager.heightmap, terrain_manager.chunk_size)
+		# Enable coastal generation on south edge (4) for testing
+		water_system.ocean_edges = 0b0100  # South edge only
+		water_system.sea_level = 15.0  # Sea level in meters
 		water_system.generate_water_bodies()
 		water_system.print_stats()
 
