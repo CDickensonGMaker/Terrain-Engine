@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "TerrainEngine",
+  "project_id": "864e147e-350c-41fc-a30d-d7eebdc1a15e"
+}
