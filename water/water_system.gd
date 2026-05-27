@@ -5,12 +5,12 @@ class_name WaterSystem
 
 ## Preload dependencies (must be before signals that use these types)
 const WaterBodyDataClass := preload("res://water/water_body_data.gd")
-const RiverGeneratorClass := preload("res://water/river_generator.gd")
+const HydrologyMapClass := preload("res://water/hydrology_map.gd")
 const RiverMeshClass := preload("res://water/river_mesh.gd")
 const PondDetectorClass := preload("res://water/pond_detector.gd")
 const WaterStaticMeshClass := preload("res://water/water_static_mesh.gd")
-const CoastalDetectorClass := preload("res://water/coastal_detector.gd")
 const WaterCoastalMeshClass := preload("res://water/water_coastal_mesh.gd")
+const WaterSwampMeshClass := preload("res://water/water_swamp_mesh.gd")
 
 signal water_generated
 signal water_body_added(body: Resource)  # WaterBodyData
@@ -28,6 +28,9 @@ var sea_level: float = 5.0
 ## Set to 0 to disable coastal generation
 var ocean_edges: int = 0b0000  # Disabled by default
 
+## Enable swamp generation
+var generate_swamps: bool = true
+
 ## Water type grid for O(1) lookups
 ## Each byte encodes: bits 0-2 = WaterType (0-6), bits 3-7 = depth_index (0-31)
 var water_map: PackedByteArray = PackedByteArray()
@@ -39,6 +42,12 @@ var _next_id: int = 0
 
 ## Reference to heightmap for terrain queries
 var _heightmap: RefCounted = null  # HeightmapStorage
+
+## Last hydrology result (for water-level queries)
+var _hydrology: RefCounted = null  # HydrologyMap
+
+## Downsample factor for hydrology compute (0 = auto from map size)
+var hydrology_downsample: int = 0
 
 ## Chunk size for spatial indexing
 var _chunk_size: float = 256.0
@@ -69,7 +78,9 @@ func initialize(heightmap: RefCounted, chunk_size: float = 256.0) -> void:
 	])
 
 
-## Generate all water bodies from heightmap
+## Generate all water bodies from a single coherent hydrology pass.
+## Water cascades from the peaks downhill: channels (creeks/rivers) form where flow
+## concentrates, pools (ponds/lakes) form in depressions, swamps in flat wet lowland.
 func generate_water_bodies() -> void:
 	if not _heightmap:
 		push_error("[WaterSystem] Cannot generate: no heightmap set")
@@ -80,87 +91,132 @@ func generate_water_bodies() -> void:
 	# Clear existing water bodies
 	clear()
 
-	# Phase 1: Extract rivers using existing RiverGenerator
-	_generate_rivers()
+	# Run the unified hydrology model once.
+	var hydro := HydrologyMapClass.new()
+	hydro.downsample = _auto_downsample()
+	hydro.ocean_edges = ocean_edges
+	hydro.sea_level = sea_level
+	hydro.generate(_heightmap)
+	_hydrology = hydro
 
-	# Phase 2: Detect ponds and lakes
-	_generate_static_bodies()
+	# Rivers/creeks come out as flow-traced polylines.
+	for river in hydro.rivers:
+		_create_river_body(river["points"], river["widths"])
 
-	# Phase 3: Generate coastal zones
-	_generate_coastal()
+	# Ponds, lakes, swamps and coastal come out as connected cell groups.
+	for b in hydro.extract_static_bodies(_heightmap):
+		_create_static_body(b)
 
-	# Build water map for O(1) lookups
-	_build_water_map()
+	# Build the O(1) lookup grid straight from the hydrology cell types.
+	_build_water_map_from_hydrology(hydro)
 
 	var elapsed := Time.get_ticks_msec() - start_time
-	print("[WaterSystem] Generated %d water bodies in %dms" % [water_bodies.size(), elapsed])
+	print("[WaterSystem] Generated %d water bodies in %dms (downsample %d)" % [
+		water_bodies.size(), elapsed, hydro.downsample
+	])
 
 	water_generated.emit()
 
 
-## Generate rivers from heightmap flow
-func _generate_rivers() -> void:
-	var generator := RiverGeneratorClass.new()
-	generator.num_rivers = 6
-	generator.base_width = 8.0
-	generator.width_growth = 0.2
-	generator.min_river_length = 20
+## Pick a hydrology compute resolution that keeps the flood/accumulation cheap.
+func _auto_downsample() -> int:
+	if hydrology_downsample > 0:
+		return hydrology_downsample
+	# Target roughly a 400-cell hydrology grid regardless of map size.
+	return maxi(1, int(round(float(water_map_size) / 450.0)))
 
-	var river_paths: Array = generator.extract_rivers_fast(_heightmap, generator.num_rivers)
 
-	for i in range(river_paths.size()):
-		var river_path = river_paths[i]
-		if river_path.size() < 2:
-			continue
+## Build a river/creek WaterBodyData from a flow-traced polyline.
+func _create_river_body(points: PackedVector2Array, widths: PackedFloat32Array) -> void:
+	if points.size() < 2:
+		return
 
-		var body := WaterBodyDataClass.new()
-		body.id = _next_id
-		_next_id += 1
+	var body := WaterBodyDataClass.new()
+	body.id = _next_id
+	_next_id += 1
 
-		# Classify as creek or river based on average width
-		var avg_width: float = 0.0
-		for w in river_path.widths:
-			avg_width += w
-		avg_width /= river_path.widths.size()
+	var avg_width: float = 0.0
+	for w in widths:
+		avg_width += w
+	avg_width /= widths.size()
 
-		body.type = WaterBodyDataClass.Type.CREEK if avg_width < 6.0 else WaterBodyDataClass.Type.RIVER
-		body.path = river_path.points
-		body.widths = river_path.widths
-		body.depth = 1.0 if body.type == WaterBodyDataClass.Type.CREEK else 2.5
+	body.type = WaterBodyDataClass.Type.CREEK if avg_width < 6.0 else WaterBodyDataClass.Type.RIVER
+	body.path = points
+	body.widths = widths
+	body.depth = 1.0 if body.type == WaterBodyDataClass.Type.CREEK else 2.5
 
-		# Calculate bounds
-		var min_pt := Vector2(INF, INF)
-		var max_pt := Vector2(-INF, -INF)
-		for pt in body.path:
-			min_pt.x = minf(min_pt.x, pt.x)
-			min_pt.y = minf(min_pt.y, pt.y)
-			max_pt.x = maxf(max_pt.x, pt.x)
-			max_pt.y = maxf(max_pt.y, pt.y)
+	var min_pt := Vector2(INF, INF)
+	var max_pt := Vector2(-INF, -INF)
+	for pt in points:
+		min_pt.x = minf(min_pt.x, pt.x)
+		min_pt.y = minf(min_pt.y, pt.y)
+		max_pt.x = maxf(max_pt.x, pt.x)
+		max_pt.y = maxf(max_pt.y, pt.y)
+	var max_width: float = 0.0
+	for w in widths:
+		max_width = maxf(max_width, w)
+	min_pt -= Vector2(max_width, max_width) * 0.5
+	max_pt += Vector2(max_width, max_width) * 0.5
+	body.bounds = Rect2(min_pt, max_pt - min_pt)
 
-		# Expand bounds by max width
-		var max_width: float = 0.0
-		for w in body.widths:
-			max_width = maxf(max_width, w)
-		min_pt -= Vector2(max_width, max_width) * 0.5
-		max_pt += Vector2(max_width, max_width) * 0.5
+	body.flow_direction = (points[points.size() - 1] - points[0]).normalized()
 
-		body.bounds = Rect2(min_pt, max_pt - min_pt)
+	var total_elev: float = 0.0
+	for pt in points:
+		total_elev += _heightmap.sample_world(pt.x, pt.y)
+	body.elevation = total_elev / points.size()
 
-		# Calculate average flow direction
-		if body.path.size() >= 2:
-			body.flow_direction = (body.path[-1] - body.path[0]).normalized()
+	_register_water_body(body)
+	_generate_river_mesh(body)
 
-		# Calculate average elevation
-		var total_elev: float = 0.0
-		for pt in body.path:
-			total_elev += _heightmap.sample_world(pt.x, pt.y)
-		body.elevation = total_elev / body.path.size()
 
-		# Add to registry
-		_register_water_body(body)
+## Build a pond/lake/swamp/coastal WaterBodyData from a hydrology cell group.
+func _create_static_body(b: Dictionary) -> void:
+	var cells: Array[Vector2i] = b["cells"]
+	if cells.size() < 8:
+		return  # Skip tiny fragments
 
-		# Generate mesh
-		_generate_river_mesh(body)
+	var type_code: int = b["type"]
+	if type_code == WaterBodyDataClass.Type.SWAMP and not generate_swamps:
+		return
+
+	var body := WaterBodyDataClass.new()
+	body.id = _next_id
+	_next_id += 1
+
+	# Standing fresh water splits into pond vs lake by area.
+	var area: float = cells.size() * _heightmap.cell_size * _heightmap.cell_size
+	if type_code == WaterBodyDataClass.Type.LAKE and area < 2500.0:
+		body.type = WaterBodyDataClass.Type.POND
+	else:
+		body.type = type_code
+
+	body.elevation = b["surface"]
+	body.depth = b["depth"]
+	body.bounds = b["bounds"]
+	body.polygon = _cells_to_polygon(cells)
+
+	_register_water_body(body)
+
+	match body.type:
+		WaterBodyDataClass.Type.COASTAL:
+			_generate_coastal_mesh(body, cells)
+		WaterBodyDataClass.Type.SWAMP:
+			_generate_swamp_mesh(body, cells)
+		_:
+			_generate_static_mesh(body, cells)
+
+
+## Build an outline polygon from a group of cells (for point-in-body queries).
+func _cells_to_polygon(cells: Array[Vector2i]) -> PackedVector2Array:
+	var detector := PondDetectorClass.new()
+	detector._heightmap = _heightmap
+	var dep := PondDetectorClass.Depression.new()
+	dep.cells.assign(cells)
+	var poly: PackedVector2Array = detector.cells_to_polygon(dep)
+	if poly.size() >= 4:
+		poly = detector.simplify_polygon(poly, _heightmap.cell_size * 2.0)
+	return poly
 
 
 ## Generate mesh for a river/creek
@@ -173,48 +229,6 @@ func _generate_river_mesh(body: Resource) -> void:
 
 	river_mesh.name = "River_%d" % body.id
 	_water_container.add_child(river_mesh)
-
-
-## Generate ponds and lakes from terrain depressions
-func _generate_static_bodies() -> void:
-	var detector := PondDetectorClass.new()
-	detector.min_depth = 0.8  # Minimum 0.8m deep depressions
-	detector.min_area = 100.0  # At least 100 m^2
-	detector.max_area = 25000.0  # Max 25000 m^2 (larger would be lakes)
-	detector.minima_search_step = 8  # Sample every 8 cells for performance
-
-	var depressions: Array = detector.detect_depressions(_heightmap)
-
-	for depression in depressions:
-		var body := WaterBodyDataClass.new()
-		body.id = _next_id
-		_next_id += 1
-
-		# Classify based on area
-		if depression.area < 2500.0:
-			body.type = WaterBodyDataClass.Type.POND
-		else:
-			body.type = WaterBodyDataClass.Type.LAKE
-
-		body.elevation = depression.pour_elevation
-		body.depth = depression.water_depth
-		body.bounds = depression.bounds
-
-		# Generate polygon from cells
-		body.polygon = detector.cells_to_polygon(depression)
-		if body.polygon.size() < 3:
-			continue  # Skip if polygon generation failed
-
-		# Simplify polygon for performance
-		body.polygon = detector.simplify_polygon(body.polygon, _heightmap.cell_size * 2.0)
-
-		# Add to registry
-		_register_water_body(body)
-
-		# Generate mesh
-		_generate_static_mesh(body, depression.cells)
-
-	print("[WaterSystem] Generated %d ponds/lakes" % depressions.size())
 
 
 ## Generate mesh for a pond/lake
@@ -236,42 +250,6 @@ func _generate_static_mesh(body: Resource, cells: Array) -> void:
 	_water_container.add_child(static_mesh)
 
 
-## Generate coastal zones from map edges
-func _generate_coastal() -> void:
-	if ocean_edges == 0:
-		return  # No coastal generation
-
-	var detector := CoastalDetectorClass.new()
-	detector.ocean_edges = ocean_edges
-	detector.sea_level = sea_level
-	detector.max_flood_distance = 150  # Max flood inland (cells)
-
-	var zones: Array = detector.detect_coastal(_heightmap, sea_level)
-
-	for zone in zones:
-		if zone.cells.size() < 10:
-			continue  # Skip tiny coastal fragments
-
-		var body := WaterBodyDataClass.new()
-		body.id = _next_id
-		_next_id += 1
-		body.type = WaterBodyDataClass.Type.COASTAL
-		body.elevation = sea_level
-		body.depth = zone.avg_depth
-		body.bounds = zone.bounds
-
-		# Store shoreline as polygon
-		body.polygon = zone.shoreline
-
-		# Add to registry
-		_register_water_body(body)
-
-		# Generate mesh
-		_generate_coastal_mesh(body, zone.cells)
-
-	print("[WaterSystem] Generated %d coastal zone(s)" % zones.size())
-
-
 ## Generate mesh for a coastal zone
 func _generate_coastal_mesh(body: Resource, cells: Array) -> void:
 	var coastal_mesh := WaterCoastalMeshClass.new()
@@ -287,6 +265,23 @@ func _generate_coastal_mesh(body: Resource, cells: Array) -> void:
 
 	coastal_mesh.name = "Coastal_%d" % body.id
 	_water_container.add_child(coastal_mesh)
+
+
+## Generate mesh for a swamp zone
+func _generate_swamp_mesh(body: Resource, cells: Array) -> void:
+	var swamp_mesh := WaterSwampMeshClass.new()
+
+	var typed_cells: Array[Vector2i] = []
+	for cell in cells:
+		typed_cells.append(cell)
+
+	swamp_mesh.build_from_cells(typed_cells, body.elevation, _heightmap)
+
+	body.mesh = swamp_mesh.mesh
+	body.mesh_instance = swamp_mesh
+
+	swamp_mesh.name = "Swamp_%d" % body.id
+	_water_container.add_child(swamp_mesh)
 
 
 ## Register a water body and update spatial index
@@ -313,123 +308,26 @@ func _register_water_body(body: Resource) -> void:
 	water_body_added.emit(body)
 
 
-## Build water map grid for O(1) lookups
-func _build_water_map() -> void:
+## Build the O(1) lookup grid directly from hydrology cell types + surfaces.
+func _build_water_map_from_hydrology(hydro: RefCounted) -> void:
 	water_map.fill(0)
 
-	for body in water_bodies.values():
-		_rasterize_water_body(body)
-
-	# Count water cells
 	var water_cells: int = 0
-	for byte in water_map:
-		if byte > 0:
-			water_cells += 1
-
 	var total_cells: int = water_map_size * water_map_size
+	for i in range(total_cells):
+		var t: int = hydro.water_type_full[i]
+		if t == 0:
+			continue
+		var x: int = i % water_map_size
+		var z: int = i / water_map_size
+		var terrain: float = _heightmap.get_cell(x, z) * _heightmap.height_scale
+		var depth: float = maxf(0.0, hydro.water_surface_full[i] - terrain)
+		var depth_index: int = clampi(int(depth * 2.0), 0, 31)
+		water_map[i] = t | (depth_index << 3)
+		water_cells += 1
+
 	var percent: float = 100.0 * water_cells / total_cells
 	print("[WaterSystem] Water map: %d/%d cells (%.1f%%)" % [water_cells, total_cells, percent])
-
-
-## Rasterize a water body into the water map
-func _rasterize_water_body(body: Resource) -> void:
-	var type_bits: int = body.type  # 0-6 fits in 3 bits
-	var depth_index: int = clampi(int(body.depth * 2), 0, 31)  # 0-31 (0.5m increments up to 15.5m)
-	var byte_value: int = type_bits | (depth_index << 3)
-
-	if body.is_flowing():
-		# Rasterize river/creek path
-		var path: PackedVector2Array = body.path
-		var widths: PackedFloat32Array = body.widths
-		for i in range(path.size() - 1):
-			var start: Vector2 = path[i]
-			var end_pt: Vector2 = path[i + 1]
-			var width: float = (widths[i] + widths[i + 1]) * 0.5
-			_rasterize_thick_line(start, end_pt, width, byte_value)
-	else:
-		# Rasterize polygon (for ponds/lakes/coastal)
-		var polygon: PackedVector2Array = body.polygon
-		_rasterize_polygon(polygon, byte_value)
-
-
-## Rasterize a thick line into water map
-func _rasterize_thick_line(start: Vector2, end: Vector2, width: float, byte_value: int) -> void:
-	var half_width: float = width * 0.5
-	var dir := (end - start).normalized()
-	var length := start.distance_to(end)
-	var perp := Vector2(-dir.y, dir.x)
-
-	# Step along line
-	var step_size: float = water_map_cell_size * 0.5
-	var steps: int = int(ceil(length / step_size))
-
-	for s in range(steps + 1):
-		var t: float = float(s) / float(steps) if steps > 0 else 0.0
-		var center := start.lerp(end, t)
-
-		# Fill perpendicular strip
-		var width_steps: int = int(ceil(half_width / step_size))
-		for w in range(-width_steps, width_steps + 1):
-			var offset := perp * (w * step_size)
-			var point := center + offset
-
-			var cx: int = int(floor(point.x / water_map_cell_size))
-			var cz: int = int(floor(point.y / water_map_cell_size))
-
-			if cx >= 0 and cx < water_map_size and cz >= 0 and cz < water_map_size:
-				water_map[cz * water_map_size + cx] = byte_value
-
-
-## Rasterize a polygon into water map (scanline fill)
-func _rasterize_polygon(polygon: PackedVector2Array, byte_value: int) -> void:
-	if polygon.size() < 3:
-		return
-
-	# Find bounding box
-	var min_pt := Vector2(INF, INF)
-	var max_pt := Vector2(-INF, -INF)
-	for pt in polygon:
-		min_pt.x = minf(min_pt.x, pt.x)
-		min_pt.y = minf(min_pt.y, pt.y)
-		max_pt.x = maxf(max_pt.x, pt.x)
-		max_pt.y = maxf(max_pt.y, pt.y)
-
-	# Convert to cell coordinates
-	var min_cell := Vector2i(
-		int(floor(min_pt.x / water_map_cell_size)),
-		int(floor(min_pt.y / water_map_cell_size))
-	)
-	var max_cell := Vector2i(
-		int(ceil(max_pt.x / water_map_cell_size)),
-		int(ceil(max_pt.y / water_map_cell_size))
-	)
-
-	# Scanline fill
-	for cz in range(max(0, min_cell.y), min(water_map_size, max_cell.y + 1)):
-		for cx in range(max(0, min_cell.x), min(water_map_size, max_cell.x + 1)):
-			var world_x: float = (cx + 0.5) * water_map_cell_size
-			var world_z: float = (cz + 0.5) * water_map_cell_size
-
-			if _point_in_polygon(Vector2(world_x, world_z), polygon):
-				water_map[cz * water_map_size + cx] = byte_value
-
-
-## Point-in-polygon test
-func _point_in_polygon(point: Vector2, polygon: PackedVector2Array) -> bool:
-	var inside := false
-	var j := polygon.size() - 1
-
-	for i in range(polygon.size()):
-		var pi := polygon[i]
-		var pj := polygon[j]
-
-		if ((pi.y > point.y) != (pj.y > point.y)) and \
-		   (point.x < (pj.x - pi.x) * (point.y - pi.y) / (pj.y - pi.y) + pi.x):
-			inside = not inside
-
-		j = i
-
-	return inside
 
 
 ## Clear all water bodies
@@ -442,6 +340,7 @@ func clear() -> void:
 	water_by_chunk.clear()
 	water_map.fill(0)
 	_next_id = 0
+	_hydrology = null
 
 
 # =============================================================================
@@ -485,6 +384,21 @@ func get_water_depth(world_x: float, world_z: float) -> float:
 
 	var depth_index: int = (byte_value >> 3) & 0x1F  # Bits 3-7
 	return depth_index * 0.5  # 0.5m per index unit
+
+
+## Get the flat water-surface height (meters) at a world position.
+## Returns -INF when there is no water there (callers should check is_water first).
+func get_water_level_at(world_x: float, world_z: float) -> float:
+	if not _hydrology:
+		return -INF
+	var cx: int = int(floor(world_x / water_map_cell_size))
+	var cz: int = int(floor(world_z / water_map_cell_size))
+	if cx < 0 or cx >= water_map_size or cz < 0 or cz >= water_map_size:
+		return -INF
+	var idx: int = cz * water_map_size + cx
+	if _hydrology.water_type_full[idx] == 0:
+		return -INF
+	return _hydrology.water_surface_full[idx]
 
 
 ## Get water body at a world position (or null)
@@ -647,3 +561,33 @@ func print_stats() -> void:
 		water_cells,
 		100.0 * water_cells / (water_map_size * water_map_size)
 	])
+
+
+## Get water stats as dictionary
+func get_stats() -> Dictionary:
+	var stats := {
+		"total": water_bodies.size(),
+		"rivers": 0,
+		"creeks": 0,
+		"ponds": 0,
+		"lakes": 0,
+		"swamps": 0,
+		"coastal": false
+	}
+
+	for body in water_bodies.values():
+		match body.type:
+			1:  # Creek
+				stats["creeks"] += 1
+			2:  # River
+				stats["rivers"] += 1
+			3:  # Pond
+				stats["ponds"] += 1
+			4:  # Lake
+				stats["lakes"] += 1
+			5:  # Swamp
+				stats["swamps"] += 1
+			6:  # Coastal
+				stats["coastal"] = true
+
+	return stats

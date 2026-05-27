@@ -13,14 +13,22 @@ var shore_fade_distance: float = 3.0
 var _material: ShaderMaterial = null
 
 
-func _ready() -> void:
+func _init() -> void:
+	# Setup material in _init so it's ready before build_from_cells is called
 	_setup_material()
+
+
+func _ready() -> void:
+	# Ensure material is set up
+	if not _material:
+		_setup_material()
 
 
 func _setup_material() -> void:
 	var shader := preload("res://water/water_static.gdshader")
 	_material = ShaderMaterial.new()
 	_material.shader = shader
+	_material.render_priority = 1  # Render after terrain
 
 
 ## Build mesh from polygon at specified elevation
@@ -137,14 +145,25 @@ func _point_to_segment_distance(point: Vector2, seg_start: Vector2, seg_end: Vec
 	return point.distance_to(closest)
 
 
-## Build mesh from a grid of cells (alternative method for more regular shapes)
+## Build mesh from a grid of cells.
+## The water surface is a single FLAT horizontal plane at `elevation` (the pour level).
+## Per-vertex water depth (elevation - terrain) goes in vertex color G; shore distance
+## in R. This is what makes lakes read as flat blue water instead of stair-stepped slabs.
+const DEPTH_NORM_RANGE: float = 4.0  # meters mapped to G = 1.0 (full "deep")
+
 func build_from_cells(cells: Array[Vector2i], elevation: float, heightmap: RefCounted) -> void:
 	if cells.size() < 1:
 		push_error("[WaterStaticMesh] No cells provided")
 		return
 
+	# Ensure material is ready
+	if not _material:
+		_setup_material()
+
 	water_elevation = elevation
 	var cell_size: float = heightmap.cell_size
+	var height_scale: float = heightmap.height_scale
+	var hmap_size: int = heightmap.size
 
 	# Create a cell lookup set
 	var cell_set: Dictionary = {}
@@ -163,21 +182,18 @@ func build_from_cells(cells: Array[Vector2i], elevation: float, heightmap: RefCo
 	for cell in cells:
 		var world_x: float = cell.x * cell_size
 		var world_z: float = cell.y * cell_size
-		var y_pos: float = elevation + 0.05
 
-		# Calculate shore distance (how many cells to edge)
+		# Shore distance (how many cells to the edge of the body)
 		var shore_dist: float = _cell_distance_to_edge(cell, cell_set) * cell_size
 		var normalized_shore: float = clampf(shore_dist / shore_fade_distance, 0.0, 1.0)
-		var color := Color(normalized_shore, 0.0, 0.0, 1.0)
 
-		# Four corners of the cell
-		var corners := [
-			Vector3(world_x, y_pos, world_z),
-			Vector3(world_x + cell_size, y_pos, world_z),
-			Vector3(world_x + cell_size, y_pos, world_z + cell_size),
-			Vector3(world_x, y_pos, world_z + cell_size)
+		# Four corners - flat surface at `elevation`, depth sampled from terrain.
+		var corner_cells := [
+			Vector2i(cell.x, cell.y),
+			Vector2i(cell.x + 1, cell.y),
+			Vector2i(cell.x + 1, cell.y + 1),
+			Vector2i(cell.x, cell.y + 1)
 		]
-
 		var corner_uvs := [
 			Vector2(0.0, 0.0),
 			Vector2(1.0, 0.0),
@@ -185,12 +201,20 @@ func build_from_cells(cells: Array[Vector2i], elevation: float, heightmap: RefCo
 			Vector2(0.0, 1.0)
 		]
 
-		# Add quad vertices
 		for i in range(4):
-			vertices.append(corners[i])
+			var ccx: int = clampi(corner_cells[i].x, 0, hmap_size - 1)
+			var ccz: int = clampi(corner_cells[i].y, 0, hmap_size - 1)
+			var corner_terrain: float = heightmap.get_cell(ccx, ccz) * height_scale
+			var depth: float = maxf(0.0, elevation - corner_terrain)
+			var normalized_depth: float = clampf(depth / DEPTH_NORM_RANGE, 0.0, 1.0)
+
+			var corner_x: float = world_x + (cell_size if i == 1 or i == 2 else 0.0)
+			var corner_z: float = world_z + (cell_size if i == 2 or i == 3 else 0.0)
+
+			vertices.append(Vector3(corner_x, elevation, corner_z))
 			normals.append(Vector3.UP)
 			uvs.append(corner_uvs[i] + Vector2(cell.x, cell.y))  # Tile UVs
-			colors.append(color)
+			colors.append(Color(normalized_shore, normalized_depth, 0.0, 1.0))
 
 		# Two triangles per quad
 		indices.append(vertex_idx)
@@ -216,6 +240,8 @@ func build_from_cells(cells: Array[Vector2i], elevation: float, heightmap: RefCo
 
 	if _material:
 		array_mesh.surface_set_material(0, _material)
+	else:
+		push_warning("[WaterStaticMesh] Material not ready!")
 
 	self.mesh = array_mesh
 
