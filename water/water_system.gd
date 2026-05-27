@@ -541,6 +541,90 @@ func get_water_near(world_pos: Vector3, radius: float) -> Array[Resource]:
 	return result
 
 
+## Generate wetness texture for terrain shore blending
+## Returns an ImageTexture with R = wetness (1 = water, fades to 0)
+func generate_wetness_texture(fade_distance: float = 20.0) -> ImageTexture:
+	# Create image matching water map size
+	var img := Image.create(water_map_size, water_map_size, false, Image.FORMAT_R8)
+	img.fill(Color(0, 0, 0, 1))
+
+	# First pass: mark water cells
+	for z in range(water_map_size):
+		for x in range(water_map_size):
+			if water_map[z * water_map_size + x] > 0:
+				img.set_pixel(x, z, Color(1, 0, 0, 1))
+
+	# Calculate distance in cells for fade
+	var fade_cells: int = int(ceil(fade_distance / water_map_cell_size))
+
+	# Second pass: expand wetness outward from water edges
+	# Use a simple distance field approximation
+	for dist in range(1, fade_cells + 1):
+		var wetness: float = 1.0 - (float(dist) / float(fade_cells))
+		wetness = wetness * wetness  # Square for smoother falloff
+
+		for z in range(water_map_size):
+			for x in range(water_map_size):
+				# Skip if already has higher wetness
+				if img.get_pixel(x, z).r >= wetness:
+					continue
+
+				# Check if any neighbor at dist-1 has wetness
+				var has_wet_neighbor := false
+				for dz in range(-1, 2):
+					for dx in range(-1, 2):
+						if dx == 0 and dz == 0:
+							continue
+						var nx: int = x + dx
+						var nz: int = z + dz
+						if nx >= 0 and nx < water_map_size and nz >= 0 and nz < water_map_size:
+							var neighbor_wetness: float = img.get_pixel(nx, nz).r
+							if neighbor_wetness > wetness:
+								has_wet_neighbor = true
+								break
+					if has_wet_neighbor:
+						break
+
+				if has_wet_neighbor:
+					img.set_pixel(x, z, Color(wetness, 0, 0, 1))
+
+	# Create texture
+	var tex := ImageTexture.create_from_image(img)
+	print("[WaterSystem] Generated wetness texture: %dx%d, fade %.1fm" % [
+		water_map_size, water_map_size, fade_distance
+	])
+	return tex
+
+
+## Get distance to nearest water (in meters)
+func get_distance_to_water(world_x: float, world_z: float) -> float:
+	var cx: int = int(floor(world_x / water_map_cell_size))
+	var cz: int = int(floor(world_z / water_map_cell_size))
+
+	if cx < 0 or cx >= water_map_size or cz < 0 or cz >= water_map_size:
+		return INF
+
+	# If in water, distance is 0
+	if water_map[cz * water_map_size + cx] > 0:
+		return 0.0
+
+	# Search outward for nearest water
+	var max_search: int = 30  # ~60m at 2m cells
+	for dist in range(1, max_search + 1):
+		for dz in range(-dist, dist + 1):
+			for dx in range(-dist, dist + 1):
+				if abs(dx) != dist and abs(dz) != dist:
+					continue  # Only check perimeter
+
+				var nx: int = cx + dx
+				var nz: int = cz + dz
+				if nx >= 0 and nx < water_map_size and nz >= 0 and nz < water_map_size:
+					if water_map[nz * water_map_size + nx] > 0:
+						return sqrt(dx * dx + dz * dz) * water_map_cell_size
+
+	return INF
+
+
 ## Debug: print water system stats
 func print_stats() -> void:
 	print("[WaterSystem] === Water System Stats ===")

@@ -347,6 +347,12 @@ func _on_terrain_ready() -> void:
 		water_system.generate_water_bodies()
 		water_system.print_stats()
 
+		# Generate wetness texture for shore blending on terrain
+		var wetness_tex: ImageTexture = water_system.generate_wetness_texture(16.0)  # 16m fade
+		if wetness_tex:
+			TerrainChunkClass.set_shader_texture("wetness_texture", wetness_tex)
+			print("[TerrainLab] Shore blending enabled")
+
 	# Connect clearing system to update gameplay grid
 	if clearing_system and clearing_system.has_signal("vegetation_updated"):
 		clearing_system.vegetation_updated.connect(_on_grid_region_changed)

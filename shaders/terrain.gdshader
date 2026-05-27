@@ -14,6 +14,11 @@ uniform float ground_texture_blend = 0.4;  // How much texture vs vertex color (
 // ground-texture fade threshold (visible on hilltops).
 uniform sampler2D clearing_texture : filter_linear, repeat_disable;
 
+// Wetness map for shore blending (R channel = wetness, 1.0 = water)
+uniform sampler2D wetness_texture : filter_linear, repeat_disable;
+uniform float wetness_strength : hint_range(0.0, 1.0) = 0.6;
+uniform vec4 wet_tint : source_color = vec4(0.15, 0.12, 0.08, 1.0);  // Dark muddy brown
+
 // Terrain parameters
 uniform float height_scale = 280.0;
 uniform float cell_size = 4.0;
@@ -95,6 +100,16 @@ void fragment() {
 
 	// Damage scars are rendered as Decals — see damage_system.gd._create_scar_decal.
 	// Do NOT add a scar_texture mix here without binding the uniform first.
+
+	// Apply wetness near water (muddy shore blending)
+	float wetness = texture(wetness_texture, uv).r * wetness_strength;
+	if (wetness > 0.01) {
+		// Darken and tint toward muddy brown
+		vec3 wet_color = mix(color, wet_tint.rgb, wetness * 0.7);
+		// Also darken overall
+		wet_color *= 1.0 - wetness * 0.3;
+		color = wet_color;
+	}
 
 	// Apply noise variation (reduced to prevent white peaks)
 	color += vec3(variation) * 0.1;
