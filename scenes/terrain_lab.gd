@@ -15,6 +15,7 @@ const QualitySettingsClass := preload("res://core/quality_settings.gd")
 const GameplayGridClass := preload("res://core/gameplay_grid.gd")
 # FogOfWarClass removed for performance optimization
 const ConstructionMarkersClass := preload("res://systems/construction_markers.gd")
+const WaterSystemClass := preload("res://water/water_system.gd")
 
 @onready var camera_rig: Node3D = $CameraRig
 @onready var spring_arm: SpringArm3D = $CameraRig/SpringArm3D
@@ -73,6 +74,7 @@ var engineering_system: Node
 var terrain_vfx: Node
 var construction_markers: Node
 var gameplay_grid: RefCounted  # GameplayGrid for efficient game logic queries
+var water_system: Node  # WaterSystem for rivers, ponds, lakes, coastal
 
 
 func _ready() -> void:
@@ -119,6 +121,11 @@ func _ready() -> void:
 	construction_markers = ConstructionMarkersClass.new()
 	construction_markers.name = "ConstructionMarkers"
 	add_child(construction_markers)
+
+	# Create water system
+	water_system = WaterSystemClass.new()
+	water_system.name = "WaterSystem"
+	add_child(water_system)
 
 	# Connect signals
 	terrain_manager.terrain_ready.connect(_on_terrain_ready)
@@ -330,6 +337,12 @@ func _on_terrain_ready() -> void:
 	gameplay_grid.set_clearing_system(clearing_system)
 	gameplay_grid.build_from_terrain()
 	gameplay_grid.print_stats()
+
+	# Initialize and generate water system
+	if water_system:
+		water_system.initialize(terrain_manager.heightmap, terrain_manager.chunk_size)
+		water_system.generate_water_bodies()
+		water_system.print_stats()
 
 	# Connect clearing system to update gameplay grid
 	if clearing_system and clearing_system.has_signal("vegetation_updated"):
@@ -602,6 +615,10 @@ func _on_regenerate() -> void:
 	vegetation_manager.clear_all()
 	if billboard_vegetation:
 		billboard_vegetation.clear_all()
+
+	# Clear water
+	if water_system:
+		water_system.clear()
 
 	# Regenerate terrain
 	terrain_manager.generate_terrain()

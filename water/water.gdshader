@@ -1,6 +1,9 @@
 shader_type spatial;
 render_mode depth_draw_always, cull_disabled;
 
+// Include shared water utilities
+#include "res://water/water_common.gdshaderinc"
+
 // Flow control
 uniform float flow_speed : hint_range(0.01, 1.0) = 0.15;
 uniform vec2 flow_direction = vec2(1.0, 0.0);
@@ -9,6 +12,9 @@ uniform vec2 flow_direction = vec2(1.0, 0.0);
 uniform vec4 water_color : source_color = vec4(0.25, 0.32, 0.18, 0.7); // Murky green-brown
 uniform vec4 water_color_deep : source_color = vec4(0.15, 0.20, 0.10, 0.85); // Deeper areas
 uniform float depth_fade : hint_range(0.1, 10.0) = 2.0;
+
+// Shore blending
+uniform float shore_fade_distance : hint_range(0.5, 5.0) = 2.0;
 
 // Specular
 uniform float specular_strength : hint_range(0.0, 1.0) = 0.4;
@@ -23,50 +29,47 @@ uniform float wave_speed : hint_range(0.1, 5.0) = 1.5;
 uniform sampler2D normal_map : hint_normal;
 uniform bool use_normal_map = false;
 
-// Simple noise function for waves
-float simple_noise(vec2 uv) {
-	return fract(sin(dot(uv, vec2(12.9898, 78.233))) * 43758.5453);
-}
+// Shore distance from vertex color (R channel)
+varying float v_shore_distance;
 
-// Smooth wave pattern
-float wave_pattern(vec2 uv, float time) {
-	float wave1 = sin(uv.x * wave_scale + time * wave_speed) * 0.5 + 0.5;
-	float wave2 = sin(uv.y * wave_scale * 0.7 + time * wave_speed * 1.3) * 0.5 + 0.5;
-	float wave3 = sin((uv.x + uv.y) * wave_scale * 0.5 + time * wave_speed * 0.8) * 0.5 + 0.5;
-	return (wave1 + wave2 + wave3) / 3.0;
+void vertex() {
+	// Shore distance stored in vertex color R channel (set during mesh generation)
+	v_shore_distance = COLOR.r * 10.0;  // Scale factor: 0-1 maps to 0-10 meters
 }
 
 void fragment() {
-	// Scrolling UV for flow effect
-	vec2 flow_uv = UV + flow_direction * TIME * flow_speed;
-	vec2 flow_uv_offset = UV + flow_direction * TIME * flow_speed * 0.7 + vec2(0.5, 0.5);
+	// Scrolling UV for flow effect (using shared function)
+	vec2 flow_uv1, flow_uv2;
+	water_flow_uvs(UV, flow_direction, flow_speed, TIME, flow_uv1, flow_uv2);
 
-	// Wave distortion
-	float wave = wave_pattern(UV, TIME);
-	vec2 distorted_uv = flow_uv + vec2(wave * wave_strength, wave * wave_strength * 0.5);
+	// Wave/ripple pattern using shared function
+	float wave = water_ripple(UV, wave_scale, wave_speed, TIME);
+	vec2 distorted_uv = flow_uv1 + vec2(wave * wave_strength, wave * wave_strength * 0.5);
 
-	// Generate procedural normal from waves
-	float wave_dx = wave_pattern(UV + vec2(0.01, 0.0), TIME) - wave_pattern(UV - vec2(0.01, 0.0), TIME);
-	float wave_dy = wave_pattern(UV + vec2(0.0, 0.01), TIME) - wave_pattern(UV - vec2(0.0, 0.01), TIME);
-	vec3 procedural_normal = normalize(vec3(wave_dx * wave_strength * 10.0, wave_dy * wave_strength * 10.0, 1.0));
+	// Generate procedural normal from waves using shared function
+	vec3 procedural_normal = water_normal_from_height(UV, wave_scale, wave_speed, TIME, wave_strength * 10.0);
 
 	// Use normal map if provided, otherwise use procedural
 	vec3 normal;
 	if (use_normal_map) {
 		vec3 normal_sample1 = texture(normal_map, distorted_uv).rgb * 2.0 - 1.0;
-		vec3 normal_sample2 = texture(normal_map, flow_uv_offset).rgb * 2.0 - 1.0;
-		normal = normalize(mix(normal_sample1, normal_sample2, 0.5));
+		vec3 normal_sample2 = texture(normal_map, flow_uv2).rgb * 2.0 - 1.0;
+		normal = water_flow_blend(normal_sample1, normal_sample2);
 	} else {
 		normal = procedural_normal;
 	}
 
-	// Depth-based color mixing (simple approximation without depth texture)
+	// Depth-based color mixing
 	float depth_factor = clamp(wave * 0.3 + 0.5, 0.0, 1.0);
-	vec4 final_color = mix(water_color, water_color_deep, depth_factor);
+	vec4 final_color = water_color_by_depth(water_color, water_color_deep, depth_factor, 1.0);
+
+	// Shore blending - fade alpha near edges
+	float shore_blend = water_shore_blend(v_shore_distance, shore_fade_distance);
+	float final_alpha = final_color.a * shore_blend;
 
 	// Apply color
 	ALBEDO = final_color.rgb;
-	ALPHA = final_color.a;
+	ALPHA = final_alpha;
 
 	// Normal mapping
 	NORMAL_MAP = normal * 0.5 + 0.5;
