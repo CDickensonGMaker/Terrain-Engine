@@ -69,6 +69,7 @@ var is_passable: PackedByteArray      # 0=blocked, 1=passable
 # References
 var heightmap_storage: RefCounted  # HeightmapStorage
 var clearing_system: Node
+var water_system: Node  # WaterSystem for water queries
 
 
 func _init(world_size_meters: float = 3072.0, cells_per_side: int = 256) -> void:
@@ -104,6 +105,10 @@ func set_heightmap(hm: RefCounted) -> void:
 
 func set_clearing_system(cs: Node) -> void:
 	clearing_system = cs
+
+
+func set_water_system(ws: Node) -> void:
+	water_system = ws
 
 
 ## Build grid from heightmap and vegetation data
@@ -152,20 +157,23 @@ func build_from_terrain() -> void:
 
 
 ## Determine terrain type from elevation and slope
-func _determine_terrain_type(height: float, slope_val: float, _wx: float, _wz: float) -> int:
+func _determine_terrain_type(height: float, slope_val: float, wx: float, wz: float) -> int:
+	# Check water system first (most accurate water detection)
+	if water_system and water_system.has_method("is_water"):
+		if water_system.is_water(wx, wz):
+			return TerrainType.WATER
+
 	# Cliff detection (steep slopes)
 	if slope_val > 0.7:
 		return TerrainType.CLIFF
 
-	# Low elevation near water level
-	if height < 5.0:
-		if slope_val < 0.1:
-			return TerrainType.RICE_PADDY  # Flat low areas = paddies
-		return TerrainType.WATER
-
-	# Very low = flooded
+	# Fallback: Low elevation heuristics for flooded areas
 	if height < 2.0:
 		return TerrainType.WATER
+
+	# Low flat areas = rice paddies
+	if height < 5.0 and slope_val < 0.1:
+		return TerrainType.RICE_PADDY
 
 	# Medium slopes = lighter vegetation
 	if slope_val > 0.4:
@@ -293,6 +301,44 @@ func is_cell_passable(gx: int, gz: int) -> bool:
 	if gx < 0 or gx >= grid_size or gz < 0 or gz >= grid_size:
 		return false
 	return is_passable[_grid_to_index(gx, gz)] == 1
+
+
+# ============================================================================
+# WATER QUERIES - Delegates to WaterSystem for detailed info
+# ============================================================================
+
+## Check if position is in water
+func is_water(world_pos: Vector3) -> bool:
+	if water_system and water_system.has_method("is_water"):
+		return water_system.is_water(world_pos.x, world_pos.z)
+	# Fallback to terrain type
+	return get_terrain_type(world_pos) == TerrainType.WATER
+
+
+## Get water depth at position (0 if not in water)
+func get_water_depth(world_pos: Vector3) -> float:
+	if water_system and water_system.has_method("get_water_depth"):
+		return water_system.get_water_depth(world_pos.x, world_pos.z)
+	return 0.0
+
+
+## Get water flow direction at position (for boats, debris, unit movement)
+func get_water_flow(world_pos: Vector3) -> Vector2:
+	if water_system and water_system.has_method("get_flow_at"):
+		return water_system.get_flow_at(world_pos.x, world_pos.z)
+	return Vector2.ZERO
+
+
+## Check if position is wadeable (shallow water units can cross)
+func is_wadeable(world_pos: Vector3) -> bool:
+	var depth: float = get_water_depth(world_pos)
+	return depth > 0.0 and depth < 1.5  # Up to 1.5m = wadeable
+
+
+## Check if position requires swimming/boats
+func requires_boat(world_pos: Vector3) -> bool:
+	var depth: float = get_water_depth(world_pos)
+	return depth >= 1.5  # 1.5m+ = needs boat
 
 
 ## Get elevation difference between two positions (for height advantage)

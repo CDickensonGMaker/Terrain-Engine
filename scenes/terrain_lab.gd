@@ -331,14 +331,7 @@ func _on_terrain_ready() -> void:
 	# Initialize terrain shader textures
 	_setup_terrain_shader_textures()
 
-	# Create and populate gameplay grid for efficient game logic queries
-	gameplay_grid = GameplayGridClass.new(terrain_manager.map_size, 256)
-	gameplay_grid.set_heightmap(terrain_manager.heightmap)
-	gameplay_grid.set_clearing_system(clearing_system)
-	gameplay_grid.build_from_terrain()
-	gameplay_grid.print_stats()
-
-	# Initialize and generate water system
+	# Initialize and generate water system (before gameplay grid for accurate water data)
 	if water_system:
 		water_system.initialize(terrain_manager.heightmap, terrain_manager.chunk_size)
 		# Enable coastal generation on south edge (4) for testing
@@ -352,6 +345,16 @@ func _on_terrain_ready() -> void:
 		if wetness_tex:
 			TerrainChunkClass.set_shader_texture("wetness_texture", wetness_tex)
 			print("[TerrainLab] Shore blending enabled")
+
+	# Create and populate gameplay grid for efficient game logic queries
+	# Built AFTER water system so water cells are properly detected
+	gameplay_grid = GameplayGridClass.new(terrain_manager.map_size, 256)
+	gameplay_grid.set_heightmap(terrain_manager.heightmap)
+	gameplay_grid.set_clearing_system(clearing_system)
+	if water_system:
+		gameplay_grid.set_water_system(water_system)
+	gameplay_grid.build_from_terrain()
+	gameplay_grid.print_stats()
 
 	# Connect clearing system to update gameplay grid
 	if clearing_system and clearing_system.has_signal("vegetation_updated"):
