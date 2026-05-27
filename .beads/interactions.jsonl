@@ -10,3 +10,4 @@
 {"id":"int-f0d7de7d","kind":"field_change","created_at":"2026-05-27T17:01:26.6091818Z","actor":"Caleb","issue_id":"TerrainEngine-by3","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-980bf704","kind":"field_change","created_at":"2026-05-27T17:02:12.05116Z","actor":"Caleb","issue_id":"TerrainEngine-3gg","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-3c05f287","kind":"field_change","created_at":"2026-05-27T17:07:09.7947312Z","actor":"Caleb","issue_id":"TerrainEngine-wfg","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
+{"id":"int-b27119a7","kind":"field_change","created_at":"2026-05-27T17:29:55.3867748Z","actor":"Caleb","issue_id":"TerrainEngine-bwk","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}

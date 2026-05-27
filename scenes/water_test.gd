@@ -19,6 +19,10 @@ var terrain_manager: Node3D
 var water_system: Node
 var terrain_engine: Node
 
+# Profiling overlay
+var _stats_text: String = ""
+var _perf_accum: float = 0.0
+
 # Camera
 var zoom_target: float = 150.0
 var current_tilt: float = -55.0
@@ -375,7 +379,18 @@ func _update_info() -> void:
 	text += "[WASD] Move camera\n"
 	text += "[Scroll] Zoom"
 
-	info_label.text = text
+	_stats_text = text
+	info_label.text = _stats_text + _perf_line()
+
+
+## Live performance readout (FPS, draw calls, primitives) for profiling.
+func _perf_line() -> String:
+	var fps: float = Engine.get_frames_per_second()
+	var draws: int = RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME)
+	var prims: int = RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME)
+	return "\n─────────────────\nFPS: %d\nDraw calls: %d\nTris: %s" % [
+		fps, draws, String.num_uint64(prims / 3)
+	]
 
 
 func _input(event: InputEvent) -> void:
@@ -403,6 +418,12 @@ func _input(event: InputEvent) -> void:
 func _process(delta: float) -> void:
 	spring_arm.spring_length = lerp(spring_arm.spring_length, zoom_target, delta * 8.0)
 	_handle_pan(delta)
+
+	# Refresh the performance readout a few times a second.
+	_perf_accum += delta
+	if _perf_accum >= 0.33 and info_label and not _stats_text.is_empty():
+		_perf_accum = 0.0
+		info_label.text = _stats_text + _perf_line()
 
 	if terrain_manager and terrain_manager.is_ready:
 		var terrain_height: float = terrain_manager.get_height_at(camera_rig.position)

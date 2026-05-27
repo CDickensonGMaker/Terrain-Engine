@@ -6,11 +6,7 @@ class_name WaterSystem
 ## Preload dependencies (must be before signals that use these types)
 const WaterBodyDataClass := preload("res://water/water_body_data.gd")
 const HydrologyMapClass := preload("res://water/hydrology_map.gd")
-const RiverMeshClass := preload("res://water/river_mesh.gd")
 const PondDetectorClass := preload("res://water/pond_detector.gd")
-const WaterStaticMeshClass := preload("res://water/water_static_mesh.gd")
-const WaterCoastalMeshClass := preload("res://water/water_coastal_mesh.gd")
-const WaterSwampMeshClass := preload("res://water/water_swamp_mesh.gd")
 
 signal water_generated
 signal water_body_added(body: Resource)  # WaterBodyData
@@ -104,8 +100,12 @@ func generate_water_bodies() -> void:
 		_create_river_body(river["points"], river["widths"])
 
 	# Ponds, lakes, swamps and coastal come out as connected cell groups.
-	for b in hydro.extract_static_bodies(_heightmap):
+	var static_bodies: Array = hydro.extract_static_bodies(_heightmap)
+	for b in static_bodies:
 		_create_static_body(b)
+
+	# Render ALL water as a single batched mesh (one draw call) for performance.
+	_build_combined_water_mesh(static_bodies, hydro.rivers)
 
 	# Build the O(1) lookup grid straight from the hydrology cell types.
 	_build_water_map_from_hydrology(hydro)
@@ -167,7 +167,6 @@ func _create_river_body(points: PackedVector2Array, widths: PackedFloat32Array) 
 	body.elevation = total_elev / points.size()
 
 	_register_water_body(body)
-	_generate_river_mesh(body)
 
 
 ## Build a pond/lake/swamp/coastal WaterBodyData from a hydrology cell group.
@@ -198,14 +197,6 @@ func _create_static_body(b: Dictionary) -> void:
 
 	_register_water_body(body)
 
-	match body.type:
-		WaterBodyDataClass.Type.COASTAL:
-			_generate_coastal_mesh(body, cells)
-		WaterBodyDataClass.Type.SWAMP:
-			_generate_swamp_mesh(body, cells)
-		_:
-			_generate_static_mesh(body, cells)
-
 
 ## Build an outline polygon from a group of cells (for point-in-body queries).
 func _cells_to_polygon(cells: Array[Vector2i]) -> PackedVector2Array:
@@ -219,69 +210,147 @@ func _cells_to_polygon(cells: Array[Vector2i]) -> PackedVector2Array:
 	return poly
 
 
-## Generate mesh for a river/creek
-func _generate_river_mesh(body: Resource) -> void:
-	var river_mesh := RiverMeshClass.new()
-	river_mesh.build_from_path(body.path, body.widths, _heightmap)
+## Shore fade distance (meters) baked into the combined mesh vertex colors.
+const COMBINED_SHORE_FADE: float = 2.5
+## Depth (meters) that maps to fully "deep" in vertex color G.
+const COMBINED_DEPTH_RANGE: float = 4.0
+## River water sits this far below the sampled bank height (sits in its channel).
+const RIVER_RECESS: float = 0.1
+const WATER_SHADER := preload("res://water/water_static.gdshader")
 
-	body.mesh = river_mesh.mesh
-	body.mesh_instance = river_mesh
+## Build ONE mesh + ONE material for every water body. Collapsing ~dozens of
+## transparent MeshInstances into a single draw call is the big win on low-end GPUs.
+func _build_combined_water_mesh(static_bodies: Array, rivers: Array) -> void:
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	var colors := PackedColorArray()
+	var indices := PackedInt32Array()
 
-	river_mesh.name = "River_%d" % body.id
-	_water_container.add_child(river_mesh)
+	for b in static_bodies:
+		var cells: Array[Vector2i] = b["cells"]
+		if cells.size() < 8:
+			continue
+		if b["type"] == WaterBodyDataClass.Type.SWAMP and not generate_swamps:
+			continue
+		_append_static_quads(cells, b["surface"], verts, normals, uvs, colors, indices)
+
+	for r in rivers:
+		_append_river_strip(r["points"], r["widths"], verts, normals, uvs, colors, indices)
+
+	if verts.is_empty():
+		return
+
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_COLOR] = colors
+	arrays[Mesh.ARRAY_INDEX] = indices
+
+	var array_mesh := ArrayMesh.new()
+	array_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mat := ShaderMaterial.new()
+	mat.shader = WATER_SHADER
+	array_mesh.surface_set_material(0, mat)
+
+	var mi := MeshInstance3D.new()
+	mi.name = "CombinedWater"
+	mi.mesh = array_mesh
+	_water_container.add_child(mi)
 
 
-## Generate mesh for a pond/lake
-func _generate_static_mesh(body: Resource, cells: Array) -> void:
-	var static_mesh := WaterStaticMeshClass.new()
+## Append flat quads for a standing-water body (pond/lake/swamp/coastal).
+func _append_static_quads(cells: Array[Vector2i], elevation: float,
+		verts: PackedVector3Array, normals: PackedVector3Array, uvs: PackedVector2Array,
+		colors: PackedColorArray, indices: PackedInt32Array) -> void:
+	var cs: float = _heightmap.cell_size
+	var hs: float = _heightmap.height_scale
+	var hmax: int = _heightmap.size - 1
 
-	# Use cells-based mesh for more accurate shore fading
-	var typed_cells: Array[Vector2i] = []
+	var cell_set: Dictionary = {}
+	for c in cells:
+		cell_set[c] = true
+
 	for cell in cells:
-		typed_cells.append(cell)
+		var wx: float = cell.x * cs
+		var wz: float = cell.y * cs
+		var shore: float = clampf(_cell_distance_to_edge(cell, cell_set) * cs / COMBINED_SHORE_FADE, 0.0, 1.0)
+		var base: int = verts.size()
 
-	static_mesh.build_from_cells(typed_cells, body.elevation, _heightmap)
+		for i in range(4):
+			var ccx: int = clampi(cell.x + (1 if i == 1 or i == 2 else 0), 0, hmax)
+			var ccz: int = clampi(cell.y + (1 if i == 2 or i == 3 else 0), 0, hmax)
+			var terrain: float = _heightmap.get_cell(ccx, ccz) * hs
+			var depth: float = clampf(maxf(0.0, elevation - terrain) / COMBINED_DEPTH_RANGE, 0.0, 1.0)
+			var cx: float = wx + (cs if i == 1 or i == 2 else 0.0)
+			var cz: float = wz + (cs if i == 2 or i == 3 else 0.0)
+			verts.append(Vector3(cx, elevation, cz))
+			normals.append(Vector3.UP)
+			uvs.append(Vector2(cell.x + (1.0 if i == 1 or i == 2 else 0.0), cell.y + (1.0 if i == 2 or i == 3 else 0.0)))
+			colors.append(Color(shore, depth, 0.0, 1.0))
 
-	body.mesh = static_mesh.mesh
-	body.mesh_instance = static_mesh
-
-	var type_name: String = "Pond" if body.type == WaterBodyDataClass.Type.POND else "Lake"
-	static_mesh.name = "%s_%d" % [type_name, body.id]
-	_water_container.add_child(static_mesh)
-
-
-## Generate mesh for a coastal zone
-func _generate_coastal_mesh(body: Resource, cells: Array) -> void:
-	var coastal_mesh := WaterCoastalMeshClass.new()
-
-	var typed_cells: Array[Vector2i] = []
-	for cell in cells:
-		typed_cells.append(cell)
-
-	coastal_mesh.build_from_cells(typed_cells, body.elevation, _heightmap)
-
-	body.mesh = coastal_mesh.mesh
-	body.mesh_instance = coastal_mesh
-
-	coastal_mesh.name = "Coastal_%d" % body.id
-	_water_container.add_child(coastal_mesh)
+		indices.append_array([base, base + 1, base + 2, base, base + 2, base + 3])
 
 
-## Generate mesh for a swamp zone
-func _generate_swamp_mesh(body: Resource, cells: Array) -> void:
-	var swamp_mesh := WaterSwampMeshClass.new()
+## Append a triangle ribbon for a river/creek path, following the terrain downhill.
+func _append_river_strip(points: PackedVector2Array, widths: PackedFloat32Array,
+		verts: PackedVector3Array, normals: PackedVector3Array, uvs: PackedVector2Array,
+		colors: PackedColorArray, indices: PackedInt32Array) -> void:
+	if points.size() < 2:
+		return
 
-	var typed_cells: Array[Vector2i] = []
-	for cell in cells:
-		typed_cells.append(cell)
+	var base: int = verts.size()
+	for i in range(points.size()):
+		var p: Vector2 = points[i]
+		var half: float = widths[i] * 0.5
+		var perp: Vector2 = _path_perpendicular(points, i)
+		var left: Vector2 = p - perp * half
+		var right: Vector2 = p + perp * half
+		# Water surface follows the terrain (rivers flow downhill), recessed slightly.
+		var y: float = (_heightmap.sample_world(left.x, left.y) + _heightmap.sample_world(right.x, right.y)) * 0.5 - RIVER_RECESS
+		# R = 1 (narrow channels shouldn't fade out), G = medium depth -> blue.
+		var col := Color(1.0, 0.35, 0.0, 1.0)
+		verts.append(Vector3(left.x, y, left.y))
+		normals.append(Vector3.UP)
+		uvs.append(Vector2(0.0, float(i)))
+		colors.append(col)
+		verts.append(Vector3(right.x, y, right.y))
+		normals.append(Vector3.UP)
+		uvs.append(Vector2(1.0, float(i)))
+		colors.append(col)
 
-	swamp_mesh.build_from_cells(typed_cells, body.elevation, _heightmap)
+	for i in range(points.size() - 1):
+		var l0: int = base + i * 2
+		var r0: int = l0 + 1
+		var l1: int = base + (i + 1) * 2
+		var r1: int = l1 + 1
+		indices.append_array([l0, r0, r1, l0, r1, l1])
 
-	body.mesh = swamp_mesh.mesh
-	body.mesh_instance = swamp_mesh
 
-	swamp_mesh.name = "Swamp_%d" % body.id
-	_water_container.add_child(swamp_mesh)
+## Distance (in cells) from a cell to the nearest cell outside the body.
+func _cell_distance_to_edge(cell: Vector2i, cell_set: Dictionary) -> int:
+	const DIRS: Array[Vector2i] = [Vector2i(0, 1), Vector2i(0, -1), Vector2i(1, 0), Vector2i(-1, 0)]
+	for dist in range(1, 20):
+		for dir in DIRS:
+			if not cell_set.has(cell + dir * dist):
+				return dist
+	return 20
+
+
+## Perpendicular to a path at a point (for river ribbon width).
+func _path_perpendicular(path: PackedVector2Array, index: int) -> Vector2:
+	var direction: Vector2
+	if index == 0:
+		direction = (path[1] - path[0]).normalized()
+	elif index == path.size() - 1:
+		direction = (path[index] - path[index - 1]).normalized()
+	else:
+		var di: Vector2 = (path[index] - path[index - 1]).normalized()
+		var do: Vector2 = (path[index + 1] - path[index]).normalized()
+		direction = ((di + do) * 0.5).normalized()
+	return Vector2(-direction.y, direction.x)
 
 
 ## Register a water body and update spatial index

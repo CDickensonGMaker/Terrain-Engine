@@ -56,6 +56,10 @@ var river_width_base: float = 2.0
 var river_width_max: float = 40.0
 var min_river_points: int = 8
 
+## Rivers are only drawn where the ground is gentle enough to hold a visible channel
+## (real valley floors). Steep fall-line drainage is left as terrain, not water.
+var river_max_slope: float = 0.15  # ~8.5 degrees
+
 ## Swamp: flat, low, moderately wet ground (NOT hillsides).
 var swamp_max_slope: float = 0.09          # ~5 degrees
 var swamp_elevation_fraction: float = 0.30 # below 30% of height_scale
@@ -433,8 +437,13 @@ func _extract_rivers() -> void:
 		var t: int = _type_h[i]
 		if (t == WaterBodyDataClass.Type.LAKE or t == WaterBodyDataClass.Type.COASTAL):
 			continue
-		if _accum[i] >= creek_threshold:
-			is_channel[i] = 1
+		if _accum[i] < creek_threshold:
+			continue
+		# Valley floors only - skip steep fall-line drainage so rivers don't render
+		# as flat slabs plastered down hillsides.
+		if _local_slope(i % _hsize, i / _hsize) > river_max_slope:
+			continue
+		is_channel[i] = 1
 
 	# Sources = channel cells with no channel cell flowing into them.
 	var visited := PackedByteArray()
